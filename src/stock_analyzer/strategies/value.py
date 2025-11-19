@@ -42,7 +42,7 @@ class ValueStrategy(ScoringStrategy):
         """Calculate value score (0-100)."""
         if not fundamentals:
             logger.warning(f"{self.name}: No fundamentals provided")
-            return Decimal("0")
+            return Decimal("50.0")  # Neutral if no data
 
         total_score = 0.0
         max_score = 0.0
@@ -75,7 +75,7 @@ class ValueStrategy(ScoringStrategy):
 
         except Exception as e:
             logger.error(f"{self.name}: Error calculating score: {e}")
-            return Decimal("0")
+            return Decimal("50.0")  # Neutral on error
 
     def _calculate_valuation_score(
         self,

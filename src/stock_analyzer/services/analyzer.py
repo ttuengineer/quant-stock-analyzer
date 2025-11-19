@@ -23,9 +23,20 @@ from ..models.domain import (
     RiskMetrics,
 )
 from ..models.enums import SignalType, TrendDirection, AnalysisTimeframe
-from ..strategies import ScoringStrategy, MomentumStrategy, ValueStrategy, GrowthStrategy
+from ..strategies import (
+    ScoringStrategy,
+    MomentumStrategy,
+    ValueStrategy,
+    GrowthStrategy,
+    FamaFrenchStrategy,
+    QualityStrategy,
+    LowVolatilityStrategy,
+    MLPredictionStrategy,
+    SentimentStrategy,
+)
 from ..utils.logger import setup_logger
 from ..utils.decorators import timing
+from ..utils.market_regime import get_market_regime, get_regime_weights, MarketRegime
 from ..config import get_settings
 
 logger = setup_logger(__name__)
@@ -42,7 +53,8 @@ class StockAnalyzer:
     def __init__(
         self,
         provider_manager: Optional[ProviderManager] = None,
-        strategies: Optional[List[ScoringStrategy]] = None
+        strategies: Optional[List[ScoringStrategy]] = None,
+        use_adaptive_weighting: bool = True
     ):
         """
         Initialize analyzer.
@@ -50,20 +62,56 @@ class StockAnalyzer:
         Args:
             provider_manager: Data provider manager (creates default if None)
             strategies: List of scoring strategies (creates default if None)
+            use_adaptive_weighting: Use market regime-based dynamic weighting
         """
         self.settings = get_settings()
         self.provider_manager = provider_manager or ProviderManager()
+        self.use_adaptive_weighting = use_adaptive_weighting
         self.strategies = strategies or self._create_default_strategies()
+        self.current_regime = None
 
         logger.info(f"Initialized analyzer with {len(self.strategies)} strategies")
+        if use_adaptive_weighting:
+            logger.info("Adaptive weighting ENABLED - strategies will adjust to market regime")
 
     def _create_default_strategies(self) -> List[ScoringStrategy]:
-        """Create default scoring strategies."""
-        return [
+        """
+        Create default scoring strategies.
+
+        Uses institutional-grade multi-factor approach:
+        - Classic factors: Momentum, Value, Growth
+        - Academic factors: Fama-French 5-Factor
+        - Quality factor: High profitability, low debt
+        - Low Volatility factor: Defensive characteristics
+        - ML Prediction: XGBoost ensemble with 60+ features
+        - Sentiment: FinBERT news sentiment (optional, requires NewsAPI key)
+
+        Weights will be dynamically adjusted based on market regime if enabled.
+        """
+        strategies = [
             MomentumStrategy(weight=1.0),
             ValueStrategy(weight=1.0),
             GrowthStrategy(weight=1.0),
+            FamaFrenchStrategy(weight=1.0),
+            QualityStrategy(weight=1.0),
+            LowVolatilityStrategy(weight=1.0),
+            MLPredictionStrategy(weight=1.0),
         ]
+
+        # Add sentiment strategy if API keys configured
+        has_av_key = hasattr(self.settings, 'alpha_vantage_api_key') and self.settings.alpha_vantage_api_key
+        has_news_key = hasattr(self.settings, 'newsapi_key') and self.settings.newsapi_key
+
+        if has_av_key or has_news_key:
+            strategies.append(SentimentStrategy(weight=1.0))
+            provider = "Alpha Vantage" if has_av_key else "NewsAPI"
+            logger.info(f"Sentiment strategy enabled ({provider} configured)")
+        else:
+            logger.info("Sentiment strategy disabled (Alpha Vantage or NewsAPI key not configured)")
+
+        logger.info(f"Initialized {len(strategies)} institutional-grade strategies")
+
+        return strategies
 
     @timing
     async def analyze(
@@ -291,35 +339,103 @@ class StockAnalyzer:
         """
         Calculate multi-factor scores using all strategies.
 
+        Uses adaptive weighting based on market regime if enabled.
+
         Returns:
             FactorScores with individual and composite scores
         """
         try:
             scores = {}
+            strategy_weights = {}
+
+            # Apply adaptive weighting if enabled
+            if self.use_adaptive_weighting:
+                regime = get_market_regime()
+                self.current_regime = regime
+                regime_weights = get_regime_weights(regime)
+
+                logger.info(f"Market regime: {regime.value} - Adjusting strategy weights")
+
+                # Map regime weights to strategies
+                for strategy in self.strategies:
+                    # Extract strategy type from name (e.g., "Momentum Strategy" -> "momentum")
+                    strategy_type = strategy.name.lower().replace(" strategy", "").replace(" factor", "").replace("-", "_")
+                    strategy_type = strategy_type.replace("fama_french_5_factor", "fama_french")
+
+                    # Get weight from regime or use default
+                    regime_weight = regime_weights.get(strategy_type, 0.5)
+                    strategy_weights[strategy.name] = regime_weight
+
+                    logger.debug(f"{strategy.name}: weight={regime_weight:.2f}")
+            else:
+                # Equal weighting
+                for strategy in self.strategies:
+                    strategy_weights[strategy.name] = strategy.weight
 
             # Calculate score from each strategy
+            raw_scores = {}  # Store raw scores for display
+            weighted_scores = {}  # Store weighted scores for composite
+            active_weights = {}  # Track weights of strategies with real data
+
             for strategy in self.strategies:
                 score = strategy.calculate_score(
                     price_data, fundamentals, technical_indicators, stock_info
                 )
-                scores[strategy.name] = float(score) * strategy.weight
+                raw_score = float(score)
+                weight = strategy_weights.get(strategy.name, 1.0)
 
-            # Calculate weighted composite
-            total_weight = sum(s.weight for s in self.strategies)
+                # Store raw score
+                raw_scores[strategy.name] = raw_score
+
+                # Check if strategy is providing real data (not just neutral 50.0)
+                # Allow small tolerance for floating point
+                if abs(raw_score - 50.0) > 0.1:
+                    # Strategy has real data - use full weight
+                    weighted_scores[strategy.name] = raw_score * weight
+                    active_weights[strategy.name] = weight
+                else:
+                    # Strategy returning neutral (no data/not trained)
+                    # Reduce weight to 10% to avoid diluting other scores
+                    weighted_scores[strategy.name] = raw_score * weight * 0.1
+                    active_weights[strategy.name] = weight * 0.1
+                    logger.debug(f"{strategy.name} returning neutral - reducing weight")
+
+            # For backward compatibility, keep scores pointing to weighted scores
+            scores = weighted_scores
+
+            # Calculate weighted composite using only active weights
+            total_weight = sum(active_weights.values())
             composite = sum(scores.values()) / total_weight if total_weight > 0 else 0
 
-            # Map strategies to factor scores
-            momentum_score = scores.get("Momentum Strategy", 0)
-            value_score = scores.get("Value Strategy", 0)
-            growth_score = scores.get("Growth Strategy", 0)
+            # Log active strategies
+            active_strategies = [name for name, score in raw_scores.items() if abs(score - 50.0) > 0.1]
+            neutral_strategies = [name for name, score in raw_scores.items() if abs(score - 50.0) <= 0.1]
+
+            if neutral_strategies:
+                logger.info(f"Active strategies ({len(active_strategies)}): {', '.join(active_strategies)}")
+                logger.info(f"Neutral strategies ({len(neutral_strategies)}): {', '.join(neutral_strategies)}")
+            else:
+                logger.info(f"All {len(active_strategies)} strategies active")
+
+            logger.info(f"Composite score: {composite:.1f}/100")
+
+            # Map strategies to factor scores (use raw scores for display)
+            momentum_score = raw_scores.get("Momentum Strategy", 0)
+            value_score = raw_scores.get("Value Strategy", 0)
+            growth_score = raw_scores.get("Growth Strategy", 0)
+            quality_score = raw_scores.get("Quality Factor", 50)
+            volatility_score = raw_scores.get("Low Volatility Factor", 50)
+
+            # Fama-French includes size factor
+            size_score = raw_scores.get("Fama-French 5-Factor", 50)
 
             return FactorScores(
                 momentum_score=Decimal(str(momentum_score)),
                 value_score=Decimal(str(value_score)),
                 growth_score=Decimal(str(growth_score)),
-                quality_score=Decimal("50"),  # Placeholder
-                size_score=Decimal("50"),  # Placeholder
-                volatility_score=Decimal("50"),  # Placeholder
+                quality_score=Decimal(str(quality_score)),
+                size_score=Decimal(str(size_score)),
+                volatility_score=Decimal(str(volatility_score)),
                 composite_score=Decimal(str(composite)),
             )
 

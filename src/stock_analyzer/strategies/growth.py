@@ -40,7 +40,7 @@ class GrowthStrategy(ScoringStrategy):
     ) -> Decimal:
         """Calculate growth score (0-100)."""
         if not fundamentals:
-            return Decimal("0")
+            return Decimal("50.0")  # Neutral if no data
 
         total_score = 0.0
         max_score = 0.0
@@ -67,11 +67,16 @@ class GrowthStrategy(ScoringStrategy):
             max_score += val_max
 
             final_score = self.normalize_score(total_score, max_score)
+
+            # If no growth metrics available, return neutral instead of 0
+            if float(final_score) == 0.0 and max_score > 0:
+                return Decimal("50.0")
+
             return final_score
 
         except Exception as e:
             logger.error(f"{self.name}: Error: {e}")
-            return Decimal("0")
+            return Decimal("50.0")  # Neutral on error, not 0
 
     def _calculate_revenue_growth(self, fundamentals: Fundamentals) -> tuple[float, float]:
         """Calculate revenue growth scores."""

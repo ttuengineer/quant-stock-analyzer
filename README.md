@@ -17,10 +17,14 @@
 - **Visual Charts**: Interactive price charts, gauges, and performance metrics
 
 ### 🧮 Quantitative Analysis
-- **Multi-Factor Scoring**: Combines momentum (33%), value (33%), and growth (33%)
+- **8 Institutional Strategies**: Momentum, Value, Growth, Fama-French 5-Factor, Quality, Low-Volatility, ML Prediction, News Sentiment
+- **Adaptive Weighting**: Dynamic strategy weights based on market regime (Bull/Bear/High-Vol/Risk-On/Risk-Off)
+- **Machine Learning**: XGBoost + LightGBM + RandomForest ensemble with 60+ engineered features
+- **News Sentiment**: FinBERT-based analysis of financial news headlines
 - **20+ Technical Indicators**: RSI, MACD, ADX, Bollinger Bands, volume analysis
 - **Comprehensive Fundamentals**: P/E, PEG, ROE, ROA, profit margins, debt ratios
 - **Risk Metrics**: Sharpe ratio, max drawdown, volatility, VaR calculations
+- **Backtesting Engine**: Walk-forward validation with realistic transaction costs
 
 ### 🏗️ Professional Architecture
 - **SOLID Principles**: Clean architecture with dependency injection
@@ -29,10 +33,15 @@
 - **Multi-Provider**: RapidAPI Yahoo Finance 15 (primary) with yfinance fallback
 - **Live Data**: Fetches S&P 500 constituents from Wikipedia (no hardcoded tickers)
 
-### 💼 Investment Strategies
+### 💼 Investment Strategies (8 Factors)
 - **Momentum**: Multi-timeframe price momentum with volume confirmation
 - **Value**: Deep value investing (Buffett/Graham principles)
 - **Growth**: Growth-at-reasonable-price (GARP) with PEG analysis
+- **Fama-French 5-Factor**: Academic model (Market, Size, Value, Profitability, Investment)
+- **Quality**: High ROE, strong balance sheet, sustainable cash flow
+- **Low Volatility**: Defensive stocks with low beta and stable returns
+- **ML Prediction**: XGBoost ensemble predicting forward returns
+- **News Sentiment** *(optional)*: FinBERT analysis of financial news
 
 ---
 
@@ -122,6 +131,146 @@ Each stock receives a **composite score (0-100)** based on three equal-weighted 
 
 ---
 
+## 🎓 Advanced Features (Institutional-Grade)
+
+### 1. Fama-French 5-Factor Model
+
+Implementation of the Nobel Prize-winning academic model (Fama & French, 2015):
+
+- **Market Factor**: Beta-adjusted market exposure
+- **Size Factor**: Market cap premium (mid-cap sweet spot)
+- **Value Factor**: Book-to-market ratio analysis
+- **Profitability Factor**: Operating profit / equity (RMW - Robust Minus Weak)
+- **Investment Factor**: Asset growth patterns (CMA - Conservative Minus Aggressive)
+
+**Reference**: Fama, E., & French, K. (2015). "A Five-Factor Asset Pricing Model"
+
+### 2. Quality Factor Strategy
+
+Screens for high-quality companies with:
+
+- **Profitability**: ROE > 25%, Operating Margin > 20%, Profit Margin > 15%
+- **Financial Strength**: Debt/Equity < 0.5, Current Ratio > 2.0, Interest Coverage > 5x
+- **Cash Flow Quality**: Positive and growing free cash flow
+- **Dividend Sustainability**: Payout ratio < 60%, consistent dividend history
+
+**Reference**: Asness, Frazzini & Pedersen (2019). "Quality Minus Junk"
+
+### 3. Low Volatility Anomaly
+
+Targets defensive stocks that outperform on a risk-adjusted basis:
+
+- **Historical Volatility**: Annualized volatility < 20%
+- **Beta Analysis**: Beta < 0.85 (less market sensitivity)
+- **Price Stability**: Low volatility-of-volatility (consistent risk profile)
+- **Drawdown Protection**: Maximum drawdown < 20%
+
+**Reference**: Ang, Hodrick, Xing & Zhang (2006). "The Cross-Section of Volatility and Expected Returns"
+
+### 4. Market Regime Detection & Adaptive Weighting
+
+Real-time market regime classification using VIX and S&P 500 trend analysis:
+
+**Regimes**:
+- **Bull Market**: S&P > 5% above 200-day SMA, VIX < 15
+- **Bear Market**: S&P < -5% below 200-day SMA, VIX > 20
+- **High Volatility**: VIX > 30 or realized volatility > 25%
+- **Risk-On**: Strong uptrend, low VIX
+- **Risk-Off**: Defensive rotation, elevated VIX
+
+**Adaptive Weighting Example** (Bull Market):
+- ML Prediction: 25%
+- Momentum: 25%
+- Growth: 20%
+- News Sentiment: 15%
+- Value: 8%
+- Fama-French: 7%
+
+Strategy weights automatically adjust based on market conditions.
+
+### 5. Machine Learning Ensemble
+
+State-of-the-art ML pipeline for return prediction:
+
+**Feature Engineering** (60+ features):
+- Price Momentum: 20 features (returns, volatility, SMA ratios, momentum, acceleration)
+- Technical Indicators: 25 features (RSI, MACD, Bollinger, Stochastic, flags)
+- Volume Analysis: 10 features (volume ratios, trends, price-volume correlation, OBV)
+- Fundamentals: 15 features (valuation, profitability, growth, financial health)
+- Market Regime: 5 features (regime flags, VIX level)
+
+**Ensemble Models**:
+- **XGBoost**: Gradient boosting with regularization (40% weight)
+- **LightGBM**: Fast gradient boosting with leaf-wise growth (35% weight)
+- **RandomForest**: Ensemble of decision trees (25% weight)
+
+**Training**:
+- Walk-forward validation (no lookahead bias)
+- Out-of-sample testing
+- Model persistence (save/load trained models)
+- Feature importance tracking
+
+**Predictions**:
+- Direction (up/down): Classification probability
+- Magnitude: Predicted return percentage
+- Confidence: Model agreement score
+
+**Reference**: Gu, Kelly & Xiu (2020). "Empirical Asset Pricing via Machine Learning"
+
+### 6. News Sentiment Analysis
+
+FinBERT-powered sentiment analysis of financial news:
+
+**Technology**:
+- **FinBERT**: Pre-trained BERT model fine-tuned on financial text
+- **NewsAPI Integration**: Real-time headlines from 70,000+ sources
+- **Sentiment Classification**: Positive, Negative, Neutral (with confidence scores)
+
+**Analysis**:
+- Aggregates sentiment across multiple news articles
+- Recency weighting (newer articles have more influence)
+- Sentiment trend detection (improving/deteriorating/stable)
+- Article volume as conviction signal
+
+**Reference**: Araci (2019). "FinBERT: Financial Sentiment Analysis with Pre-trained Language Models"
+
+### 7. Backtesting Engine
+
+Realistic strategy validation with walk-forward testing:
+
+**Features**:
+- Walk-forward validation (train/test split)
+- Transaction cost modeling (commission + slippage)
+- Multiple rebalancing frequencies (daily, weekly, monthly)
+- Position sizing constraints (min/max position %)
+- Portfolio-level simulations
+
+**Performance Metrics**:
+- Returns: Total, annualized, alpha vs benchmark
+- Risk: Volatility, Sharpe ratio, Sortino ratio, Calmar ratio
+- Drawdown: Maximum drawdown analysis
+- Trade Statistics: Win rate, profit factor, avg win/loss
+
+**Reference**: Pardo (2008). "The Evaluation and Optimization of Trading Strategies"
+
+### 8. Configuration
+
+**Optional API Keys**:
+```bash
+# NewsAPI (for sentiment analysis)
+NEWSAPI_KEY=your_newsapi_key_here
+
+# For ML models (automatically downloads on first run)
+# No additional configuration needed
+```
+
+**System automatically**:
+- Uses default strategies if no ML models trained
+- Disables sentiment strategy if no NewsAPI key
+- Falls back gracefully when features unavailable
+
+---
+
 ## 🏗️ Architecture
 
 ```
@@ -133,12 +282,17 @@ quant-stock-analyzer/
 │   ├── data/
 │   │   ├── providers/       # Yahoo (RapidAPI + yfinance), Alpha Vantage
 │   │   └── provider_manager.py  # Multi-provider failover
-│   ├── strategies/          # Momentum, Value, Growth (pluggable)
+│   ├── strategies/          # 8 strategies (Momentum, Value, Growth, FF5, Quality, Low-Vol, ML, Sentiment)
 │   ├── services/            # StockAnalyzer, batch processing
-│   ├── utils/               # Logging, decorators, exceptions
+│   ├── ml/                  # Machine learning (feature_engineer, predictor)
+│   ├── sentiment/           # News sentiment (FinBERT, NewsAPI)
+│   ├── backtest/            # Backtesting engine (walk-forward validation)
+│   ├── utils/               # Logging, market_regime, decorators, exceptions
 │   └── cli/                 # Command-line interface
 ├── tests/                   # Unit & integration tests
-├── requirements.txt         # Dependencies
+├── models/                  # Saved ML models (auto-created)
+├── test_advanced_features.py  # Integration tests
+├── requirements.txt         # Dependencies (incl. XGBoost, LightGBM, Transformers)
 └── README.md               # This file
 ```
 
