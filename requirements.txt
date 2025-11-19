@@ -1,0 +1,56 @@
+# Core Dependencies
+python-dotenv==1.0.1
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Data Providers & Market Data
+yfinance==0.2.37
+pandas==2.2.0
+numpy==1.26.3
+
+# Technical Analysis
+pandas-ta==0.3.14b0
+scipy==1.12.0
+scikit-learn==1.4.0
+
+# Async & HTTP
+aiohttp==3.9.1
+asyncio-throttle==1.0.2
+
+# Web Scraping (for live ticker fetching)
+beautifulsoup4==4.12.2
+lxml==5.1.0
+requests==2.31.0
+
+# Caching (Optional - Redis)
+redis==5.0.1
+
+# Visualization & Dashboard (Optional)
+streamlit==1.31.0
+plotly==5.19.0
+
+# CLI & Output Formatting
+rich==13.7.0
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+
+# Code Quality
+black==24.1.1
+flake8==7.0.0
+mypy==1.8.0
+pylint==3.0.3
+isort==5.13.2
+
+# Security
+bandit==1.7.6
+
+# Machine Learning (Advanced Features)
+xgboost==2.0.3
+lightgbm==4.2.0
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2024.1
