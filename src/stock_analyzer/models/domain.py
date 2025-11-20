@@ -7,7 +7,7 @@ following domain-driven design principles.
 
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from decimal import Decimal
 
 from .enums import (
@@ -42,13 +42,13 @@ class Quote(BaseModel):
             raise ValueError("Ticker cannot be empty")
         return v.upper().strip()
 
-    class Config:
-        """Pydantic config."""
-
-        json_encoders = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
             Decimal: lambda v: float(v),
             datetime: lambda v: v.isoformat(),
         }
+    )
 
 
 class StockInfo(BaseModel):
@@ -254,13 +254,13 @@ class Analysis(BaseModel):
         """Convert to dictionary for serialization."""
         return super().model_dump(exclude_none=True, **kwargs)
 
-    class Config:
-        """Pydantic config."""
-
-        json_encoders = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
             Decimal: lambda v: float(v),
             datetime: lambda v: v.isoformat(),
         }
+    )
 
 
 class ScreenerResult(BaseModel):
