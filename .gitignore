@@ -20,11 +20,7 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
-.venv/
-venv/
-ENV/
-env/
+
 
 # IDE
 .vscode/
@@ -33,11 +29,7 @@ env/
 *.swo
 *~
 
-# Environment Variables & API Keys
-.env
-.env.local
-.env.*.local
-API_KEYS_BACKUP.txt
+
 
 # Logs
 *.log
