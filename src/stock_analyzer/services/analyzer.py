@@ -31,7 +31,7 @@ from ..strategies import (
     FamaFrenchStrategy,
     QualityStrategy,
     LowVolatilityStrategy,
-    MLPredictionStrategy,
+    # MLPredictionStrategy,  # Disabled - models not trained
     SentimentStrategy,
 )
 from ..utils.logger import setup_logger
@@ -83,7 +83,6 @@ class StockAnalyzer:
         - Academic factors: Fama-French 5-Factor
         - Quality factor: High profitability, low debt
         - Low Volatility factor: Defensive characteristics
-        - ML Prediction: XGBoost ensemble with 60+ features
         - Sentiment: FinBERT news sentiment (optional, requires NewsAPI key)
 
         Weights will be dynamically adjusted based on market regime if enabled.
@@ -95,7 +94,7 @@ class StockAnalyzer:
             FamaFrenchStrategy(weight=1.0),
             QualityStrategy(weight=1.0),
             LowVolatilityStrategy(weight=1.0),
-            MLPredictionStrategy(weight=1.0),
+            # MLPredictionStrategy(weight=1.0),  # Disabled - models not trained
         ]
 
         # Add sentiment strategy if API keys configured
@@ -109,7 +108,7 @@ class StockAnalyzer:
         else:
             logger.info("Sentiment strategy disabled (Alpha Vantage or NewsAPI key not configured)")
 
-        logger.info(f"Initialized {len(strategies)} institutional-grade strategies")
+        logger.info(f"Initialized {len(strategies)} strategies (ML disabled)")
 
         return strategies
 

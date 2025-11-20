@@ -594,27 +594,30 @@ def show_hot_buys():
     st.markdown('<h1 class="main-header">🔥 Hot Buys</h1>', unsafe_allow_html=True)
     st.markdown("### Top Investment Opportunities Right Now")
 
-    # Expanded watchlist - scan top 100 S&P 500 stocks for opportunities
-    watchlist = get_stock_universe("top100")
+    # Quick scan of top 50 most liquid stocks for opportunities
+    watchlist = get_stock_universe("quick50")
 
     if st.button("🔄 Find Hot Buys", type="primary", use_container_width=True):
         with st.spinner(f"Scanning {len(watchlist)} popular stocks..."):
             try:
                 analyses = analyze_batch_cached(watchlist)
 
+                # Show what we got
+                st.info(f"✅ Successfully analyzed {len(analyses)} stocks")
+
                 # Filter for good investment opportunities
-                # BUY/STRONG_BUY signals (score 60+), or exceptional HOLD signals (score 58+)
+                # BUY/STRONG_BUY signals (score 60+), or strong HOLD signals (score 55+)
                 hot_buys = [
                     a for a in analyses
                     if (a.signal in [SignalType.STRONG_BUY, SignalType.BUY]) or
-                       (a.signal == SignalType.HOLD and float(a.composite_score) >= 58)
+                       (a.signal == SignalType.HOLD and float(a.composite_score) >= 55)
                 ]
 
                 hot_buys.sort(key=lambda x: x.composite_score, reverse=True)
 
                 if hot_buys:
                     st.success(f"🎯 Found {len(hot_buys)} top investment opportunities!")
-                    st.info(f"**Criteria**: BUY/STRONG_BUY signals (score ≥ 60), or exceptional HOLD signals (score ≥ 58)")
+                    st.info(f"**Criteria**: BUY/STRONG_BUY signals (score ≥ 60), or strong HOLD signals (score ≥ 55)")
 
                     # Display top picks
                     for i, analysis in enumerate(hot_buys[:15], 1):  # Show up to 15 instead of 10
@@ -646,16 +649,41 @@ def show_hot_buys():
 
                             st.markdown("---")
                 else:
-                    st.warning(
-                        """
-                        **No buy opportunities found in current scan.**
+                    # Show debugging info
+                    if analyses:
+                        from collections import Counter
+                        all_scores = [float(a.composite_score) for a in analyses]
+                        all_signals = [a.signal.value for a in analyses]
+                        signal_counts = Counter(all_signals)
 
-                        This is normal in certain market conditions. Try:
-                        - Scanning again later
-                        - Using the Stock Screener with lower thresholds
-                        - Checking individual stocks on the Dashboard
-                        """
-                    )
+                        st.warning(
+                            f"""
+                            **No buy opportunities found in current scan.**
+
+                            **What we found:**
+                            - Analyzed: {len(analyses)} stocks
+                            - Highest score: {max(all_scores):.1f}
+                            - Average score: {sum(all_scores)/len(all_scores):.1f}
+                            - Signal distribution: {dict(signal_counts)}
+
+                            **Criteria**: BUY/STRONG_BUY signals (score ≥ 60), or strong HOLD signals (score ≥ 55)
+
+                            **Try:**
+                            - Using the Stock Screener with lower thresholds
+                            - Checking individual stocks on the Dashboard
+                            """
+                        )
+                    else:
+                        st.warning(
+                            """
+                            **No buy opportunities found in current scan.**
+
+                            This is normal in certain market conditions. Try:
+                            - Scanning again later
+                            - Using the Stock Screener with lower thresholds
+                            - Checking individual stocks on the Dashboard
+                            """
+                        )
 
             except Exception as e:
                 st.error(f"Error finding hot buys: {str(e)}")
