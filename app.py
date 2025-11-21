@@ -285,6 +285,255 @@ def get_stock_universe(universe_type: str) -> list:
     return universes.get(universe_type, quick50)
 
 
+def get_peer_companies_dynamic(analysis, universe_analyses, max_peers: int = 3):
+    """
+    Dynamically discover peer companies based on actual data.
+
+    Args:
+        analysis: Analysis object for the target stock
+        universe_analyses: List of Analysis objects for universe stocks (pre-analyzed)
+        max_peers: Maximum number of peers to return
+
+    Returns:
+        List of Analysis objects for peer companies
+    """
+    if not analysis.stock_info:
+        return []
+
+    target_sector = analysis.stock_info.sector
+    target_industry = analysis.stock_info.industry
+    target_market_cap = analysis.stock_info.market_cap
+
+    # Filter peers by sector match
+    sector_matches = []
+    for peer in universe_analyses:
+        # Skip self
+        if peer.ticker == analysis.ticker:
+            continue
+
+        # Must have stock info
+        if not peer.stock_info:
+            continue
+
+        # Check sector match
+        if target_sector and peer.stock_info.sector == target_sector:
+            score = 100  # Base score for sector match
+
+            # Bonus for industry match
+            if target_industry and peer.stock_info.industry == target_industry:
+                score += 50
+
+            # Bonus for similar market cap (within 2x)
+            if target_market_cap and peer.stock_info.market_cap:
+                cap_ratio = max(target_market_cap, peer.stock_info.market_cap) / min(target_market_cap, peer.stock_info.market_cap)
+                if cap_ratio <= 2.0:
+                    score += 30
+                elif cap_ratio <= 5.0:
+                    score += 10
+
+            sector_matches.append((peer, score))
+
+    # Sort by score and return top N
+    sector_matches.sort(key=lambda x: x[1], reverse=True)
+    return [match[0] for match in sector_matches[:max_peers]]
+
+
+def generate_investment_thesis(analysis) -> dict:
+    """
+    Generate actionable investment thesis with entry/exit levels.
+
+    Returns:
+        dict with thesis, entry_price, stop_loss, price_target, time_horizon
+    """
+    score = float(analysis.composite_score)
+    signal = analysis.signal.value
+    current_price = float(analysis.quote.price) if analysis.quote else None
+
+    # Determine thesis based on score and factors
+    if score >= 70:
+        thesis = f"**STRONG BUY**: {analysis.ticker} shows exceptional strength across multiple factors. "
+        time_horizon = "3-6 months"
+        upside = 15
+    elif score >= 60:
+        thesis = f"**BUY**: {analysis.ticker} presents a solid opportunity with favorable risk/reward. "
+        time_horizon = "3-6 months"
+        upside = 10
+    elif score >= 50:
+        thesis = f"**ACCUMULATE**: {analysis.ticker} shows mixed signals. Consider building position on weakness. "
+        time_horizon = "6-12 months"
+        upside = 8
+    elif score >= 40:
+        thesis = f"**HOLD**: {analysis.ticker} lacks clear catalysts. Wait for better entry or new developments. "
+        time_horizon = "Monitoring only"
+        upside = 5
+    else:
+        thesis = f"**AVOID**: {analysis.ticker} shows concerning weakness across key metrics. "
+        time_horizon = "Not recommended"
+        upside = 0
+
+    # Add key reasons from strengths
+    if analysis.key_strengths:
+        thesis += f"Key strengths: {', '.join(analysis.key_strengths[:2])}. "
+
+    # Add risks
+    if analysis.key_risks:
+        thesis += f"Watch for: {', '.join(analysis.key_risks[:2])}."
+
+    # Calculate entry/exit levels based on technical indicators
+    entry_price = None
+    stop_loss = None
+    price_target = None
+
+    if current_price and analysis.technical_indicators:
+        # Entry: Current price or pullback to SMA20
+        if analysis.technical_indicators.sma_20:
+            sma_20 = float(analysis.technical_indicators.sma_20)
+            entry_price = min(current_price, sma_20 * 1.02)  # At or near SMA20
+        else:
+            entry_price = current_price
+
+        # Stop loss: Below key support (8-10% below entry)
+        stop_loss = entry_price * 0.92
+
+        # Price target: Based on upside potential
+        price_target = current_price * (1 + upside / 100)
+
+        # Adjust based on volatility
+        if analysis.risk_metrics and analysis.risk_metrics.volatility_annual:
+            vol = float(analysis.risk_metrics.volatility_annual)
+            if vol > 40:  # High volatility - wider stops
+                stop_loss = entry_price * 0.88
+
+    return {
+        "thesis": thesis,
+        "signal": signal,
+        "entry_price": entry_price,
+        "stop_loss": stop_loss,
+        "price_target": price_target,
+        "time_horizon": time_horizon,
+        "upside_potential": f"{upside}%" if upside > 0 else "Limited",
+        "risk_reward": round((price_target - entry_price) / (entry_price - stop_loss), 2) if (entry_price and stop_loss and price_target) else None
+    }
+
+
+def create_enhanced_price_chart(analysis, price_data):
+    """Create enhanced price chart with volume, MAs, and support/resistance."""
+    if price_data is None or price_data.empty:
+        return None
+
+    # Create subplots: price + volume
+    from plotly.subplots import make_subplots
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.7, 0.3],
+        subplot_titles=(f'{analysis.ticker} Price Chart', 'Volume')
+    )
+
+    # Candlestick chart
+    fig.add_trace(
+        go.Candlestick(
+            x=price_data.index,
+            open=price_data['Open'],
+            high=price_data['High'],
+            low=price_data['Low'],
+            close=price_data['Close'],
+            name='Price'
+        ),
+        row=1, col=1
+    )
+
+    # Add moving averages
+    if analysis.technical_indicators:
+        if analysis.technical_indicators.sma_20:
+            sma_20_val = float(analysis.technical_indicators.sma_20)
+            fig.add_hline(y=sma_20_val, line_dash="dash", line_color="blue",
+                         annotation_text="SMA 20", row=1, col=1)
+
+        if analysis.technical_indicators.sma_50:
+            sma_50_val = float(analysis.technical_indicators.sma_50)
+            fig.add_hline(y=sma_50_val, line_dash="dash", line_color="orange",
+                         annotation_text="SMA 50", row=1, col=1)
+
+        if analysis.technical_indicators.sma_200:
+            sma_200_val = float(analysis.technical_indicators.sma_200)
+            fig.add_hline(y=sma_200_val, line_dash="dash", line_color="red",
+                         annotation_text="SMA 200", row=1, col=1)
+
+    # Volume bars
+    colors = ['red' if price_data['Close'].iloc[i] < price_data['Open'].iloc[i]
+              else 'green' for i in range(len(price_data))]
+
+    fig.add_trace(
+        go.Bar(
+            x=price_data.index,
+            y=price_data['Volume'],
+            marker_color=colors,
+            name='Volume',
+            showlegend=False
+        ),
+        row=2, col=1
+    )
+
+    fig.update_layout(
+        height=600,
+        xaxis_rangeslider_visible=False,
+        template="plotly_white",
+        hovermode='x unified'
+    )
+
+    fig.update_xaxes(title_text="Date", row=2, col=1)
+    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+    fig.update_yaxes(title_text="Volume", row=2, col=1)
+
+    return fig
+
+
+def create_peer_comparison_chart(ticker_analysis, peer_analyses):
+    """Create peer comparison chart showing key metrics."""
+    if not peer_analyses:
+        return None
+
+    # Prepare data
+    tickers = [ticker_analysis.ticker] + [p.ticker for p in peer_analyses]
+    scores = [float(ticker_analysis.composite_score)] + [float(p.composite_score) for p in peer_analyses]
+
+    # Get P/E ratios
+    pe_ratios = []
+    pe_ratios.append(float(ticker_analysis.fundamentals.pe_ratio) if ticker_analysis.fundamentals and ticker_analysis.fundamentals.pe_ratio else None)
+    for p in peer_analyses:
+        pe_ratios.append(float(p.fundamentals.pe_ratio) if p.fundamentals and p.fundamentals.pe_ratio else None)
+
+    # Create comparison dataframe
+    df = pd.DataFrame({
+        'Ticker': tickers,
+        'Composite Score': scores,
+        'P/E Ratio': pe_ratios
+    })
+
+    # Create grouped bar chart
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        name='Composite Score',
+        x=df['Ticker'],
+        y=df['Composite Score'],
+        marker_color=['#667eea' if t == ticker_analysis.ticker else '#cbd5e0' for t in df['Ticker']]
+    ))
+
+    fig.update_layout(
+        title=f"{ticker_analysis.ticker} vs Peers - Composite Score",
+        xaxis_title="Company",
+        yaxis_title="Score",
+        template="plotly_white",
+        height=400
+    )
+
+    return fig
+
+
 def show_dashboard():
     """Main dashboard page."""
     st.markdown('<h1 class="main-header">📈 Stock Analyzer Pro</h1>', unsafe_allow_html=True)
