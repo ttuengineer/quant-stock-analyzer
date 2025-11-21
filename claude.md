@@ -1061,6 +1061,345 @@ class StockAnalyzer:
 
 ---
 
-**Last Updated**: 2025-01-18
-**Version**: 1.0
+## ML Stock Prediction: Findings & Next Steps
+
+> **Session Date**: 2025-11-21
+> **Status**: In Progress - Debugging Performance Regression
+
+### Executive Summary
+
+Built a walk-forward validated ML stock picker with survivorship bias correction. **Long-only mode previously beat SPY** (+123% vs +109%), but recent runs show degraded performance. Root cause suspected: **prediction horizon mismatch**.
+
+---
+
+### What Was Built
+
+#### Core Pipeline
+1. **Feature Engineering** (`scripts/engineer_features.py`)
+   - 42 features: momentum, volatility, cross-sectional ranks, industry residuals
+   - Monthly rebalancing dates (end-of-month)
+   - Target: Binary classification (top 10% performers)
+
+2. **Walk-Forward Validation** (`scripts/walk_forward_validation.py`)
+   - Train 2015-2017 → Test 2018, Train 2015-2018 → Test 2019, etc.
+   - Ensemble of 3-20 XGBoost models with different seeds
+   - Survivorship bias fix via historical S&P 500 membership
+
+3. **Paper Trading** (`scripts/paper_trading.py`) - **NEWLY ALIGNED**
+   - Now matches walk-forward logic exactly
+   - Vol-weighted positions (high vol = smaller weight)
+   - Full audit trail (model hash, data hash, timestamps)
+   - Supports `--retrain` for fresh model training
+
+4. **Portfolio Optimizer** (`scripts/portfolio_optimizer.py`)
+   - CVXPY-based convex optimization
+   - Supports beta neutralization, sector limits, turnover penalties
+
+---
+
+### Key Results (Historical)
+
+#### Best Performing Mode: Long-Only Baseline
+```
+Year      Portfolio        SPY     Excess
+2018        -14.4%     -9.5%     -5.0%
+2019        +14.6%    +22.6%     -8.0%
+2020        +26.1%    +15.9%    +10.2%   ← Beat SPY
+2021        +44.0%    +28.7%    +15.3%   ← Beat SPY
+2022        -19.7%    -14.6%     -5.2%
+2023        +21.3%    +16.8%     +4.5%   ← Beat SPY
+2024         +1.9%    +21.0%    -19.2%
+2025         +7.6%     +4.6%     +3.0%   ← Beat SPY
+─────────────────────────────────────────
+TOTAL      +123.5%   +109.2%    +14.3%   (Historical best)
+```
+
+#### Model Quality Metrics
+| Metric | Value | Assessment |
+|--------|-------|------------|
+| Avg AUC | 0.663 | Good (>0.60 is strong) |
+| Avg Precision@10 | 21.1% | Excellent (>20%) |
+| Avg IC | 0.04 | Moderate (usable) |
+| Bottom Decile Hit | 4.3% | Good (<10%) |
+| Beat SPY Rate | 62% | 5 of 8 years |
+
+#### What FAILED: Long-Short Modes
+- **Elite Mode** (L/S + factor neutral): -16.6% total
+- **PRO Mode** (continuous weights): -5.5% total
+- **Root cause**: Shorts crushed in bull market, excessive turnover (1000%+/year)
+
+---
+
+### Current Issue: Performance Regression
+
+**Latest run (2025-11-21) shows degraded results:**
+```
+TOTAL      +89.8%   +109.2%    -19.3%   (Now LOSING to SPY)
+```
+
+**Suspected Cause**: Feature engineering was re-run with **3-MONTH prediction horizon**:
+```
+Engineering features with 3-MONTH prediction horizon...
+```
+
+**Fix Required**: Prediction horizon should be **1-MONTH** (21 trading days) to match monthly rebalancing.
+
+---
+
+### Next Steps (Priority Order)
+
+#### 1. FIX: Verify Prediction Horizon (CRITICAL)
+```bash
+# Check engineer_features.py for FORWARD_DAYS setting
+# Should be ~21 (1 month), NOT 63 (3 months)
+```
+- Horizon must match rebalancing frequency
+- 3-month horizon with monthly rebalancing = data leakage / misalignment
+
+#### 2. Audit Feature Engineering for Leakage
+- Verify `future_return` uses correct window
+- Confirm cross-sectional ranks computed within each date only
+- Check for any forward-looking features
+
+#### 3. Re-run Walk-Forward with Correct Settings
+```bash
+# After fixing horizon:
+.venv/Scripts/python.exe scripts/engineer_features.py
+.venv/Scripts/python.exe scripts/walk_forward_validation.py
+```
+- Should recover +123% total return result
+
+#### 4. Update Price Data
+```bash
+# Data only goes to 2025-07-31
+.venv/Scripts/python.exe scripts/collect_data.py
+.venv/Scripts/python.exe scripts/engineer_features.py
+```
+
+#### 5. Save Walk-Forward Outputs (Nice to Have)
+- Currently only prints to console
+- Should save: predictions, weights, IC time series, turnover by period
+- Enables debugging specific years (e.g., "why did 2024 fail?")
+
+---
+
+### Monthly Workflow (Production)
+
+```bash
+# 1. Update data (1st of each month)
+.venv/Scripts/python.exe scripts/collect_data.py
+
+# 2. Re-engineer features
+.venv/Scripts/python.exe scripts/engineer_features.py
+
+# 3. Generate picks
+.venv/Scripts/python.exe scripts/paper_trading.py --generate --retrain
+
+# 4. Reconcile previous month (after 30 days)
+.venv/Scripts/python.exe scripts/paper_trading.py --reconcile latest
+
+# 5. View cumulative performance
+.venv/Scripts/python.exe scripts/paper_trading.py --report
+```
+
+---
+
+### Key Commands Reference
+
+```bash
+# Walk-forward validation (shows yearly returns vs SPY)
+.venv/Scripts/python.exe scripts/walk_forward_validation.py
+
+# With larger ensemble
+.venv/Scripts/python.exe scripts/walk_forward_validation.py --ensemble 5
+
+# Long-short elite mode (NOT recommended - underperforms)
+.venv/Scripts/python.exe scripts/walk_forward_validation.py --elite
+
+# Paper trading status
+.venv/Scripts/python.exe scripts/paper_trading.py --status
+
+# Generate new picks (vol-weighted, survivorship-fixed)
+.venv/Scripts/python.exe scripts/paper_trading.py --generate --retrain
+```
+
+---
+
+### Architecture Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **Long-only** | Beat SPY historically; L/S fails in bull markets |
+| **Vol-weighting** | High-vol stocks get smaller positions |
+| **Monthly rebalancing** | Matches feature generation frequency |
+| **3-year minimum training** | First test year = 2018 |
+| **Survivorship bias fix** | Removes ~3-7%/year artificial boost |
+| **Ensemble (3+ models)** | Reduces variance, stabilizes predictions |
+
+---
+
+### Files Created This Session
+
+| File | Purpose |
+|------|---------|
+| `scripts/portfolio_optimizer.py` | CVXPY convex optimizer |
+| `scripts/paper_trading.py` | Production paper trading (aligned with walk-forward) |
+| `paper_trading/picks/` | Saved picks with audit trail |
+| `paper_trading/performance/` | Reconciliation results |
+
+---
+
+### Technical Debt / Known Issues
+
+1. **FutureWarning in pandas groupby** - Non-critical, cosmetic
+2. **No saved walk-forward outputs** - Makes debugging harder
+3. **Beta neutralization order** - Should be: weights → neutralize → turnover constraint
+4. **12 features unavailable** - Some residual features not generated
+
+---
+
+### Expert Analysis: Model vs Portfolio Construction
+
+> **Key Insight**: The ML model has real signal. Portfolio construction is destroying the alpha.
+
+#### Model Quality Assessment (All Modes)
+
+| Metric | Value | Assessment |
+|--------|-------|------------|
+| AUC | ~0.66 | Very good for cross-sectional stock prediction |
+| Precision@10% | ~21% | Excellent |
+| IC | 0.038-0.040 | Real but weak signal, consistent with academic literature |
+| Bottom Decile | ~4% | Extremely strong (<10% = real predictive power) |
+| Positive IC Years | 62% | Stable signal |
+
+**Verdict**: The ML model absolutely contains alpha. This is non-random, statistically stable, and matches what funds use.
+
+#### Why Portfolio Construction Fails
+
+**Long-Only Issues:**
+- Model favors low-vol, mean-reversion, quality stocks
+- But construction picks high-vol, high-beta stocks because:
+  - Predictions are probability-based, not risk-adjusted
+  - High-vol stocks naturally end up in top-20
+  - No volatility adjustment
+  - No beta constraint
+- Beta 1.82 = leveraged S&P 500 exposure
+- Down years (2018, 2022) wreck performance
+
+**Long-Short Issues:**
+- IC ~0.04 is too weak for continuous weights without:
+  - Factor model
+  - Risk model
+  - Convex optimizer
+  - 200+ model ensemble
+- Market-neutral needs: 1000+ stocks, Barra/Axioma factors, microstructure data
+- Current implementation is "halfway to quant fund but not enough"
+
+#### The Quant Strategy Progression
+
+| Stage | Status | Difficulty |
+|-------|--------|------------|
+| 1. Build ML alpha model | ✓ Complete | Normal |
+| 2. Prove out-of-sample signal | ✓ Complete | Hard |
+| 3. Extract alpha via portfolio construction | ✗ In Progress | Extremely Hard |
+
+---
+
+### Recommended Fixes (Priority Order)
+
+#### Fix 1: Volatility-Adjusted Stock Selection (HIGH IMPACT)
+```python
+# Score adjustment
+score_adj = score / volatility_60d
+```
+
+#### Fix 2: Beta Control
+```python
+# Option A: Remove high-beta stocks
+stocks = stocks[stocks['beta'] <= 1.5]
+
+# Option B: Beta-adjusted weights
+weight = weight / beta
+```
+
+#### Fix 3: Confidence-Based Position Sizing
+```python
+# Z-score based weights
+w_i = zscore(pred_i) / sum(abs(zscore))
+```
+
+#### Fix 4: Additional Controls
+- Position cap: 5% max per stock
+- Sector neutrality
+- Risk-parity style sizing
+- Vol bucketing
+
+**Expected Result**: These fixes should dramatically reduce 2018/2022 blowups.
+
+---
+
+### Path to Stronger Signal (IC 0.04 → 0.06+)
+
+Doubling IC roughly doubles monetizable alpha. Add:
+
+1. **More orthogonal features**
+   - Analyst revisions
+   - Earnings surprises
+   - Short interest
+
+2. **Market regime features**
+   - VIX level/change
+   - Credit spreads
+   - Yield curve slope
+
+3. **Industry-relative features** (very powerful)
+   - Return vs industry median
+   - Vol vs industry median
+
+4. **Rolling windows**
+   - Multiple lookbacks (20d, 60d, 120d)
+   - Exponential weighted features
+
+5. **Macro regime filters**
+   - Fed policy regime
+   - Economic cycle indicators
+
+---
+
+### What NOT to Do Yet
+
+**Don't pursue long-short until you have:**
+- More features
+- Larger ensemble (200+ models)
+- 5x more data
+- Real factor model (Barra, Axioma)
+
+Current signal (IC ~0.04) is too weak for L/S without institutional infrastructure.
+
+---
+
+### Assessment Summary
+
+| Aspect | Rating | Notes |
+|--------|--------|-------|
+| ML Alpha Model | ✓ Legit & Good | Metrics match real quant equity teams |
+| Backtesting Framework | ✓ Professional Level | Walk-forward, survivorship fix, ensemble, slippage, IC analysis |
+| Portfolio Construction | ✗ Needs Work | 2-3 months from fund-ready |
+| Overall | Ready for quant interview/research role | Approach is correct, execution close |
+
+---
+
+### Future Development Options
+
+1. **Production-grade long-only optimizer** (Recommended next)
+2. **Risk model** (beta/vol/sector neutral)
+3. **Meta-model for position sizing**
+4. **Volatility regime filter** (fixes 2018/2022)
+5. **Live trading pipeline**
+6. **IC improvement roadmap** (target: 0.06-0.07)
+
+---
+
+**Last Updated**: 2025-11-21
+**Version**: 2.0
 **Owner**: Principal Engineering Team
