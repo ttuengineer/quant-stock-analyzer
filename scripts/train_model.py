@@ -67,9 +67,23 @@ def main():
         'dist_from_52w_high_rank', 'dist_from_52w_low_rank',
         'volume_ratio_20_rank', 'volume_zscore_rank',
 
+        # === INDUSTRY-NEUTRAL RESIDUALS (professional upgrade!) ===
+        'return_1d_resid', 'return_3d_resid', 'return_5d_resid',
+        'return_1m_resid', 'return_3m_resid', 'return_6m_resid',
+        'volatility_20d_resid', 'volatility_60d_resid',
+        'dist_from_sma_50_resid', 'dist_from_sma_200_resid',
+        'volume_ratio_20_resid', 'volume_zscore_resid',
+
         # === MARKET REGIME ===
         'market_volatility', 'market_trend'
     ]
+
+    # Filter to only columns that exist in data
+    available_cols = [col for col in feature_cols if col in features_df.columns]
+    missing_cols = set(feature_cols) - set(available_cols)
+    if missing_cols:
+        print(f"Note: {len(missing_cols)} features not available")
+    feature_cols = available_cols
 
     print(f"\nUsing {len(feature_cols)} features:")
     print("  - RAW: reversal (1-5d), momentum, volatility, technicals, volume")

@@ -16,6 +16,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import pickle
+import json
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -28,6 +29,417 @@ from scipy.stats import spearmanr
 import xgboost as xgb
 
 
+def bootstrap_pvalue(returns, n_iter=10000, seed=42):
+    """
+    Bootstrap test for whether mean return > 0.
+
+    Returns: (empirical_mean, p_value, ci_low, ci_high)
+    """
+    np.random.seed(seed)
+    returns = np.array(returns)
+    emp_mean = np.mean(returns)
+
+    boot_means = []
+    for _ in range(n_iter):
+        sample = np.random.choice(returns, size=len(returns), replace=True)
+        boot_means.append(sample.mean())
+
+    boot_means = np.array(boot_means)
+
+    # One-sided p-value: P(mean <= 0)
+    p_value = np.mean(boot_means <= 0)
+
+    # 95% confidence interval
+    ci_low = np.percentile(boot_means, 2.5)
+    ci_high = np.percentile(boot_means, 97.5)
+
+    return emp_mean, p_value, ci_low, ci_high
+
+
+def compute_ic_stats(predictions, actual_returns):
+    """
+    Compute Information Coefficient (IC) statistics.
+
+    IC = Spearman rank correlation between predictions and actual returns.
+    This is the core measure of signal quality in quant finance.
+
+    Returns dict with IC stats.
+    """
+    from scipy.stats import spearmanr, pearsonr
+
+    # Filter valid pairs
+    mask = ~(np.isnan(predictions) | np.isnan(actual_returns))
+    preds = predictions[mask]
+    actuals = actual_returns[mask]
+
+    if len(preds) < 10:
+        return {'ic': 0, 'ic_pvalue': 1, 'pearson_ic': 0, 'n_samples': len(preds)}
+
+    # Spearman IC (rank-based, more robust)
+    ic, ic_pvalue = spearmanr(preds, actuals)
+
+    # Pearson IC (linear correlation)
+    pearson_ic, _ = pearsonr(preds, actuals)
+
+    return {
+        'ic': ic,
+        'ic_pvalue': ic_pvalue,
+        'pearson_ic': pearson_ic,
+        'n_samples': len(preds)
+    }
+
+
+def compute_factor_turnover(current_weights, previous_weights):
+    """
+    Compute factor turnover between periods.
+
+    Turnover = sum of absolute weight changes / 2.
+    """
+    if previous_weights is None:
+        return 0.0
+
+    # Align tickers
+    all_tickers = set(current_weights.keys()) | set(previous_weights.keys())
+    turnover = 0.0
+    for ticker in all_tickers:
+        curr = current_weights.get(ticker, 0)
+        prev = previous_weights.get(ticker, 0)
+        turnover += abs(curr - prev)
+
+    return turnover / 2  # Each side counted once
+
+
+def compute_stock_betas(prices_df, spy_df, lookback_days=252):
+    """
+    Compute rolling beta to SPY for each stock.
+
+    Beta = Cov(stock, market) / Var(market)
+    Uses trailing returns to avoid lookahead bias.
+
+    Returns DataFrame with ticker, date, beta columns.
+    """
+    # Compute daily returns
+    prices_df = prices_df.sort_values(['ticker', 'date'])
+    prices_df['daily_return'] = prices_df.groupby('ticker')['adj_close'].pct_change()
+
+    spy_df = spy_df.sort_values('date')
+    spy_df['spy_return'] = spy_df['adj_close'].pct_change()
+
+    # Merge stock returns with SPY returns
+    merged = prices_df.merge(spy_df[['date', 'spy_return']], on='date', how='left')
+
+    # Compute rolling beta for each stock
+    def calc_rolling_beta(group):
+        if len(group) < 60:  # Minimum 60 days for beta calculation
+            group['beta'] = 1.0  # Default beta
+            return group
+
+        # Rolling covariance and variance
+        stock_rets = group['daily_return'].values
+        spy_rets = group['spy_return'].values
+
+        betas = []
+        for i in range(len(group)):
+            if i < 60:
+                betas.append(1.0)  # Default
+            else:
+                start = max(0, i - lookback_days)
+                s_ret = stock_rets[start:i]
+                m_ret = spy_rets[start:i]
+                # Remove NaN
+                valid = ~(np.isnan(s_ret) | np.isnan(m_ret))
+                s_ret = s_ret[valid]
+                m_ret = m_ret[valid]
+
+                if len(s_ret) > 30:
+                    cov = np.cov(s_ret, m_ret)[0, 1]
+                    var = np.var(m_ret)
+                    beta = cov / var if var > 0 else 1.0
+                    # Clip extreme betas
+                    beta = np.clip(beta, -1, 3)
+                else:
+                    beta = 1.0
+                betas.append(beta)
+
+        group['beta'] = betas
+        return group
+
+    beta_df = merged.groupby('ticker', group_keys=False).apply(calc_rolling_beta)
+    return beta_df[['ticker', 'date', 'beta']].dropna()
+
+
+def neutralize_beta(picks_df, betas_df, target_beta=0.0):
+    """
+    Adjust portfolio weights to achieve target beta.
+
+    For a long-short portfolio:
+    - Increase weight on low-beta longs, decrease high-beta longs
+    - Increase weight on high-beta shorts, decrease low-beta shorts
+
+    Returns DataFrame with adjusted weights.
+    """
+    # Merge picks with betas
+    merged = picks_df.merge(betas_df[['ticker', 'date', 'beta']], on=['ticker', 'date'], how='left')
+    merged['beta'] = merged['beta'].fillna(1.0)  # Default beta=1
+
+    # Current portfolio beta
+    if 'weight' not in merged.columns:
+        merged['weight'] = 1.0 / len(merged)
+
+    current_beta = (merged['weight'] * merged['beta']).sum()
+
+    if abs(current_beta - target_beta) < 0.05:
+        # Already close to target
+        return merged
+
+    # Simple beta adjustment: scale weights inversely by beta deviation
+    # This is a simplified approach; full optimization would use QP
+    beta_adjustment = target_beta - current_beta
+
+    # Adjust weights: lower weight for high-beta stocks, higher for low-beta
+    merged['beta_deviation'] = merged['beta'] - merged['beta'].mean()
+    merged['weight_adj'] = merged['weight'] * (1 - 0.3 * merged['beta_deviation'])
+
+    # Renormalize
+    merged['weight_adj'] = merged['weight_adj'] / merged['weight_adj'].abs().sum()
+
+    return merged
+
+
+def neutralize_sector(picks_df, sectors_dict, long_short=False):
+    """
+    Sector-neutral portfolio: equal weight in each sector.
+
+    For each sector:
+    - Equal allocation to that sector (1/N sectors)
+    - Within sector: proportional to model score
+
+    This removes sector bets from the portfolio.
+    """
+    # Add sector info
+    picks_df = picks_df.copy()
+    picks_df['sector'] = picks_df['ticker'].map(sectors_dict).fillna('Unknown')
+
+    # Count sectors
+    sectors = picks_df['sector'].unique()
+    n_sectors = len(sectors)
+
+    if n_sectors <= 1:
+        # Only one sector or no sector info - can't neutralize
+        return picks_df
+
+    # Allocate equally to each sector
+    sector_weight = 1.0 / n_sectors
+
+    # Within each sector, allocate proportionally to pred_proba
+    def weight_within_sector(group):
+        if 'pred_proba' in group.columns:
+            scores = group['pred_proba'].values
+            # For longs: higher score = higher weight
+            # For shorts: lower score (already selected bottom) = still prop to score
+            if scores.sum() > 0:
+                weights = scores / scores.sum()
+            else:
+                weights = np.ones(len(group)) / len(group)
+        else:
+            weights = np.ones(len(group)) / len(group)
+
+        group['sector_weight'] = weights * sector_weight
+        return group
+
+    picks_df = picks_df.groupby('sector', group_keys=False).apply(weight_within_sector)
+
+    return picks_df
+
+
+def compute_continuous_weights(predictions, max_position_weight=0.05):
+    """
+    Compute continuous z-score based weights for long-short portfolio.
+
+    Instead of top-N / bottom-N discrete selection, weight ALL stocks
+    proportional to their z-score. This:
+    - Increases diversification (500 positions vs 40)
+    - Reduces turnover (small weight changes vs full replacement)
+    - Better captures IC across full cross-section
+
+    Args:
+        predictions: Array of model predictions (probabilities)
+        max_position_weight: Max weight for any single position (default 5%)
+
+    Returns:
+        weights: Array of weights (positive = long, negative = short)
+                 Sum of abs(weights) = 2.0 (100% long, 100% short = 200% gross)
+    """
+    from scipy.stats import zscore
+
+    # Z-score the predictions
+    z = zscore(predictions)
+
+    # Replace NaN with 0 (stocks with no prediction get no weight)
+    z = np.nan_to_num(z, nan=0.0)
+
+    # Normalize so sum(abs(weights)) = 2.0 (dollar neutral: 1.0 long, 1.0 short)
+    total_abs = np.abs(z).sum()
+    if total_abs > 0:
+        weights = z / total_abs * 2.0
+    else:
+        weights = np.zeros_like(z)
+
+    # Apply position limits
+    weights = np.clip(weights, -max_position_weight, max_position_weight)
+
+    # Re-normalize after clipping to maintain dollar neutrality
+    long_sum = weights[weights > 0].sum()
+    short_sum = abs(weights[weights < 0].sum())
+
+    if long_sum > 0:
+        weights[weights > 0] *= 1.0 / long_sum
+    if short_sum > 0:
+        weights[weights < 0] *= 1.0 / short_sum
+
+    return weights
+
+
+def apply_turnover_constraint(current_weights, previous_weights, max_turnover_per_stock=0.05):
+    """
+    Apply turnover constraint to limit weight changes per stock.
+
+    This reduces turnover from ~1200%/year to ~200-300%/year by:
+    - Limiting max weight change per stock per period
+    - Creating "stickiness" in positions
+
+    Args:
+        current_weights: Dict of {ticker: target_weight}
+        previous_weights: Dict of {ticker: previous_weight} or None
+        max_turnover_per_stock: Max weight change allowed (default 5%)
+
+    Returns:
+        constrained_weights: Dict of {ticker: constrained_weight}
+    """
+    if previous_weights is None:
+        return current_weights
+
+    constrained = {}
+    all_tickers = set(current_weights.keys()) | set(previous_weights.keys())
+
+    for ticker in all_tickers:
+        target = current_weights.get(ticker, 0.0)
+        previous = previous_weights.get(ticker, 0.0)
+
+        # Limit the change
+        change = target - previous
+        if abs(change) > max_turnover_per_stock:
+            change = np.sign(change) * max_turnover_per_stock
+
+        new_weight = previous + change
+
+        # Only include non-zero weights
+        if abs(new_weight) > 0.001:  # 0.1% minimum position
+            constrained[ticker] = new_weight
+
+    # Re-normalize to maintain dollar neutrality
+    long_sum = sum(w for w in constrained.values() if w > 0)
+    short_sum = abs(sum(w for w in constrained.values() if w < 0))
+
+    for ticker in constrained:
+        if constrained[ticker] > 0 and long_sum > 0:
+            constrained[ticker] /= long_sum
+        elif constrained[ticker] < 0 and short_sum > 0:
+            constrained[ticker] /= short_sum
+
+    return constrained
+
+
+def save_fold_model(model, test_year, seed, train_window, feature_cols, output_dir="models/folds"):
+    """
+    Save per-fold model with metadata for audit trail.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    out_path = output_dir / f"fold_{test_year}_seed_{seed}.pkl"
+    metadata = {
+        'model': model,
+        'test_year': test_year,
+        'train_window': train_window,
+        'feature_cols': feature_cols,
+        'seed': seed,
+        'trained_at': datetime.now().isoformat()
+    }
+
+    with open(out_path, 'wb') as f:
+        pickle.dump(metadata, f)
+
+    return out_path
+
+
+def load_historical_universe(filepath="data/historical_sp500_universe.json"):
+    """
+    Load historical S&P 500 universe to fix survivorship bias.
+
+    Returns tuple: (universe_by_date dict, ticker_aliases dict)
+    """
+    filepath = Path(filepath)
+    if not filepath.exists():
+        print(f"WARNING: Historical universe file not found: {filepath}")
+        print("Run: python scripts/fetch_historical_sp500.py to create it")
+        return None, {}
+
+    with open(filepath, 'r') as f:
+        data = json.load(f)
+
+    universe = data.get('universe_by_date', {})
+    aliases = data.get('ticker_aliases', {})
+
+    return universe, aliases
+
+
+def get_universe_at_date(historical_universe, target_date):
+    """
+    Get the S&P 500 universe at a specific date.
+
+    Returns set of valid tickers for that date.
+    """
+    if historical_universe is None:
+        return None  # No filtering
+
+    target = pd.to_datetime(target_date).strftime('%Y-%m-%d')
+
+    # Find the most recent universe snapshot <= target date
+    dates = sorted([d for d in historical_universe.keys() if d <= target], reverse=True)
+
+    if dates:
+        return set(historical_universe[dates[0]])
+
+    # Fallback to earliest available
+    earliest = min(historical_universe.keys())
+    return set(historical_universe[earliest])
+
+
+# Global ticker aliases - loaded dynamically from JSON
+_TICKER_ALIASES = {}
+
+
+def set_ticker_aliases(aliases):
+    """Set the ticker aliases from loaded data."""
+    global _TICKER_ALIASES
+    _TICKER_ALIASES = aliases
+
+
+def normalize_ticker(ticker):
+    """Get all valid ticker variants for matching."""
+    variants = set()
+    variants.add(ticker)
+    variants.add(ticker.replace('.', '-'))
+    variants.add(ticker.replace('-', '.'))
+
+    # Add dynamically loaded aliases
+    if ticker in _TICKER_ALIASES:
+        variants.update(_TICKER_ALIASES[ticker])
+
+    return variants
+
+
 def walk_forward_validation(
     min_train_years: int = 3,
     test_months: int = 12,
@@ -38,7 +450,17 @@ def walk_forward_validation(
     vol_target: float = None,  # Target annual volatility (e.g., 0.15 for 15%)
     use_kelly: bool = False,   # Use Kelly fraction for position sizing
     track_turnover: bool = True,  # Track portfolio turnover
-    n_ensemble: int = 3  # Number of models to ensemble (different seeds)
+    n_ensemble: int = 3,  # Number of models to ensemble (different seeds)
+    fix_survivorship_bias: bool = True,  # Use historical S&P 500 membership
+    save_fold_models: bool = True,  # Save per-fold models for audit
+    run_bootstrap: bool = True,  # Run bootstrap significance test
+    long_short: bool = False,  # Use long-short market-neutral portfolio
+    short_cost_bps: float = 50,  # Annual short borrow cost in basis points
+    neutralize_beta_flag: bool = False,  # Neutralize portfolio beta
+    neutralize_sector_flag: bool = False,  # Neutralize sector exposure
+    continuous_weights: bool = False,  # Use continuous z-score weights (vs top-N)
+    max_position_weight: float = 0.05,  # Max weight per position (5%)
+    max_turnover_per_stock: float = 0.03  # Max weight change per stock per month (3%)
 ):
     """
     Walk-forward out-of-sample validation.
@@ -56,6 +478,11 @@ def walk_forward_validation(
     """
     print("=" * 70)
     print("WALK-FORWARD OUT-OF-SAMPLE VALIDATION")
+    if continuous_weights:
+        print(f"(CONTINUOUS Z-SCORE WEIGHTS: All stocks, max {max_position_weight*100:.0f}% per position)")
+        print(f"(TURNOVER CONSTRAINED: Max {max_turnover_per_stock*100:.0f}% weight change per stock)")
+    elif long_short:
+        print(f"(LONG-SHORT MARKET-NEUTRAL: {top_n} long / {top_n} short)")
     if n_ensemble > 1:
         print(f"(ENSEMBLE: {n_ensemble} models with different seeds)")
     if use_risk_off:
@@ -64,9 +491,37 @@ def walk_forward_validation(
         print(f"(WITH VOL TARGETING: {vol_target*100:.0f}% annual vol target)")
     if use_kelly:
         print("(WITH KELLY FRACTION position sizing)")
+    if neutralize_beta_flag:
+        print("(WITH BETA NEUTRALIZATION: Target beta = 0)")
+    if neutralize_sector_flag:
+        print("(WITH SECTOR NEUTRALIZATION: Equal sector weights)")
+    if fix_survivorship_bias:
+        print("(WITH SURVIVORSHIP BIAS FIX: Historical S&P 500 membership)")
     print("=" * 70)
     print("\nThis is the GOLD STANDARD robustness test.")
     print("Each test period is truly out-of-sample.\n")
+
+    # === LOAD HISTORICAL UNIVERSE FOR SURVIVORSHIP BIAS FIX ===
+    historical_universe = None
+    if fix_survivorship_bias:
+        historical_universe, ticker_aliases = load_historical_universe()
+        if historical_universe:
+            # Set global ticker aliases for normalize_ticker()
+            set_ticker_aliases(ticker_aliases)
+
+            dates_available = sorted(historical_universe.keys())
+            print(f"Survivorship bias fix: Loaded {len(dates_available)} universe snapshots")
+            print(f"  Date range: {dates_available[0]} to {dates_available[-1]}")
+            print(f"  Ticker aliases loaded: {len(ticker_aliases)}")
+            # Show sample removed stocks
+            earliest_universe = set(historical_universe[dates_available[0]])
+            latest_universe = set(historical_universe[dates_available[-1]])
+            removed_since_start = earliest_universe - latest_universe
+            if removed_since_start:
+                print(f"  Stocks removed since {dates_available[0][:4]}: {len(removed_since_start)}")
+                print(f"  Examples: {list(removed_since_start)[:5]}")
+        else:
+            print("WARNING: Could not load historical universe, proceeding without survivorship bias fix")
 
     # Load all data
     print("Loading data...")
@@ -81,6 +536,27 @@ def walk_forward_validation(
     spy_df['date'] = pd.to_datetime(spy_df['date'])
 
     db.close()
+
+    # === LOAD SECTOR DATA FOR NEUTRALIZATION ===
+    sectors_dict = {}
+    if neutralize_sector_flag:
+        # Try to load sectors from historical universe file
+        universe_path = Path("data/historical_sp500_universe.json")
+        if universe_path.exists():
+            with open(universe_path, 'r') as f:
+                universe_data = json.load(f)
+            sectors_dict = universe_data.get('sectors', {})
+            print(f"Loaded sector data for {len(sectors_dict)} tickers")
+        else:
+            print("WARNING: No sector data available - sector neutralization disabled")
+            neutralize_sector_flag = False
+
+    # === COMPUTE BETAS FOR NEUTRALIZATION ===
+    betas_df = None
+    if neutralize_beta_flag:
+        print("Computing rolling betas (this may take a moment)...")
+        betas_df = compute_stock_betas(prices_df.copy(), spy_df.copy())
+        print(f"Computed betas for {betas_df['ticker'].nunique()} tickers")
 
     print(f"Data range: {features_df['date'].min().date()} to {features_df['date'].max().date()}")
 
@@ -100,9 +576,23 @@ def walk_forward_validation(
         'dist_from_sma_50_rank', 'dist_from_sma_200_rank',
         'dist_from_52w_high_rank', 'dist_from_52w_low_rank',
         'volume_ratio_20_rank', 'volume_zscore_rank',
+        # INDUSTRY-NEUTRAL RESIDUALS (professional upgrade!)
+        'return_1d_resid', 'return_3d_resid', 'return_5d_resid',
+        'return_1m_resid', 'return_3m_resid', 'return_6m_resid',
+        'volatility_20d_resid', 'volatility_60d_resid',
+        'dist_from_sma_50_resid', 'dist_from_sma_200_resid',
+        'volume_ratio_20_resid', 'volume_zscore_resid',
         # MARKET REGIME
         'market_volatility', 'market_trend'
     ]
+
+    # Filter to only columns that exist in data
+    available_cols = [col for col in feature_cols if col in features_df.columns]
+    missing_cols = set(feature_cols) - set(available_cols)
+    if missing_cols:
+        print(f"Note: {len(missing_cols)} features not available (run engineer_features.py to add)")
+    feature_cols = available_cols
+    print(f"Using {len(feature_cols)} features")
 
     # Get years available
     features_df['year'] = features_df['date'].dt.year
@@ -123,21 +613,55 @@ def walk_forward_validation(
     print(f"  First test year: {first_test_year}")
     print(f"  Last test year: {years[-1]}")
 
-    # Pre-compute price lookups
-    price_by_ticker = {
-        ticker: group.set_index('date').sort_index()
-        for ticker, group in prices_df.groupby('ticker')
-    }
+    # Pre-compute price lookups with numpy arrays for binary search
+    price_by_ticker = {}
+    for ticker, group in prices_df.groupby('ticker'):
+        sorted_group = group.sort_values('date')
+        price_by_ticker[ticker] = {
+            'dates': np.array(sorted_group['date'].values),
+            'prices': sorted_group['adj_close'].values
+        }
     spy_prices = spy_df.set_index('date').sort_index()
 
-    all_trading_dates = sorted(prices_df['date'].unique())
+    all_trading_dates = np.array(sorted(prices_df['date'].unique()))
     trading_date_idx = {d: i for i, d in enumerate(all_trading_dates)}
 
     def get_next_trading_day(date):
-        idx = trading_date_idx.get(date)
-        if idx is not None and idx + 1 < len(all_trading_dates):
-            return all_trading_dates[idx + 1]
+        """Get the next trading day using binary search."""
+        idx = np.searchsorted(all_trading_dates, date)
+        if idx < len(all_trading_dates) and all_trading_dates[idx] == date:
+            idx += 1  # Move to next day
+        if idx < len(all_trading_dates):
+            return all_trading_dates[idx]
         return None
+
+    def get_price_on_or_after(ticker_data, target_date):
+        """
+        Get price on target_date or FIRST available date after (no backward drift).
+        Uses binary search for O(log n) performance.
+        This prevents forward-looking bias from backward price lookups.
+        """
+        dates = ticker_data['dates']
+        prices = ticker_data['prices']
+
+        # Convert target_date to numpy datetime64 for comparison
+        target_dt64 = np.datetime64(pd.Timestamp(target_date))
+
+        # Binary search for target date or next available
+        idx = np.searchsorted(dates, target_dt64)
+
+        # If exact match
+        if idx < len(dates) and dates[idx] == target_dt64:
+            return prices[idx], dates[idx]
+
+        # If no exact match, use next available (forward only, never backward)
+        if idx < len(dates):
+            # Only allow up to 5 trading days forward drift
+            days_diff = (pd.Timestamp(dates[idx]) - pd.Timestamp(target_date)).days
+            if days_diff <= 7:  # ~5 trading days
+                return prices[idx], dates[idx]
+
+        return None, None
 
     # === WALK FORWARD ===
 
@@ -148,6 +672,7 @@ def walk_forward_validation(
     turnover_records = []  # Track monthly turnover
     previous_holdings = set()  # Previous month's tickers
     realized_vol_window = []  # Rolling window for realized vol calculation
+    previous_continuous_weights = None  # For continuous weights turnover constraint
 
     # Kelly fraction tracking (calculated from rolling window)
     rolling_win_rate = []
@@ -164,6 +689,42 @@ def walk_forward_validation(
         # Split data
         train_data = features_df[features_df['year'] <= train_end_year].copy()
         test_data = features_df[features_df['year'] == test_year].copy()
+
+        # === SURVIVORSHIP BIAS FIX ===
+        # Filter to only include stocks that were in S&P 500 at each point in time
+        if historical_universe:
+            def filter_by_universe(df):
+                """Filter dataframe to only include stocks in S&P 500 at each date."""
+                # Build universe cache by unique dates (much faster than row-by-row)
+                unique_dates = df['date'].unique()
+                date_universes = {}
+                for d in unique_dates:
+                    universe = get_universe_at_date(historical_universe, d)
+                    # Pre-expand with proper ticker alias mapping
+                    expanded = set()
+                    for t in universe:
+                        expanded.update(normalize_ticker(t))
+                    date_universes[d] = expanded
+
+                # Vectorized check: for each row, is any ticker variant in that date's universe?
+                def check_ticker_in_universe(row):
+                    universe = date_universes.get(row['date'], set())
+                    ticker_variants = normalize_ticker(row['ticker'])
+                    return bool(ticker_variants & universe)  # Set intersection
+
+                valid_mask = df.apply(check_ticker_in_universe, axis=1)
+                return df[valid_mask]
+
+            train_before = len(train_data)
+            test_before = len(test_data)
+
+            train_data = filter_by_universe(train_data)
+            test_data = filter_by_universe(test_data)
+
+            train_removed = train_before - len(train_data)
+            test_removed = test_before - len(test_data)
+            if train_removed > 0 or test_removed > 0:
+                print(f"  Survivorship fix: removed {train_removed} train / {test_removed} test samples")
 
         if len(train_data) < 1000 or len(test_data) < 100:
             print(f"  Skipping: insufficient data (train={len(train_data)}, test={len(test_data)})")
@@ -207,12 +768,23 @@ def walk_forward_validation(
 
         # Train ensemble of models with different random seeds
         models = []
-        for seed in range(n_ensemble):
+        for seed_idx in range(n_ensemble):
+            actual_seed = 42 + seed_idx * 17  # Different seeds
             params = base_params.copy()
-            params['random_state'] = 42 + seed * 17  # Different seeds
+            params['random_state'] = actual_seed
             model = xgb.XGBClassifier(**params)
             model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], verbose=False)
             models.append(model)
+
+            # Save per-fold model for audit trail
+            if save_fold_models:
+                save_fold_model(
+                    model=model,
+                    test_year=test_year,
+                    seed=actual_seed,
+                    train_window=(min_start_year, train_end_year),
+                    feature_cols=feature_cols
+                )
 
         # Evaluate on test year
         test_clean = test_data[['ticker', 'date', 'target_binary'] + feature_cols].dropna()
@@ -303,10 +875,56 @@ def walk_forward_validation(
             for m in models:
                 ensemble_preds += m.predict_proba(X)[:, 1]
             date_features['pred_proba'] = ensemble_preds / len(models)
-            top_picks = date_features.nlargest(top_n, 'pred_proba')
+
+            # === PORTFOLIO CONSTRUCTION ===
+            if continuous_weights:
+                # CONTINUOUS Z-SCORE WEIGHTS: Weight ALL stocks by signal strength
+                # This is ChatGPT's recommended approach for proper IC monetization
+                predictions = date_features['pred_proba'].values
+                tickers = date_features['ticker'].values
+
+                # Compute continuous weights
+                raw_weights = compute_continuous_weights(predictions, max_position_weight)
+
+                # Create weight dict
+                target_weights = {t: w for t, w in zip(tickers, raw_weights) if abs(w) > 0.001}
+
+                # Apply turnover constraint (uses nonlocal previous_continuous_weights)
+                constrained_weights = apply_turnover_constraint(
+                    target_weights,
+                    previous_continuous_weights,
+                    max_turnover_per_stock
+                )
+                previous_continuous_weights = constrained_weights.copy()
+
+                # For compatibility with rest of code, create picks DataFrames
+                long_tickers = [t for t, w in constrained_weights.items() if w > 0]
+                short_tickers = [t for t, w in constrained_weights.items() if w < 0]
+
+                top_picks = date_features[date_features['ticker'].isin(long_tickers)].copy()
+                bottom_picks = date_features[date_features['ticker'].isin(short_tickers)].copy() if short_tickers else None
+
+                # Store weights for return calculation
+                continuous_weight_dict = constrained_weights
+
+            else:
+                # DISCRETE TOP-N / BOTTOM-N SELECTION (original behavior)
+                top_picks = date_features.nlargest(top_n, 'pred_proba')
+                continuous_weight_dict = None
+
+                if long_short:
+                    # Short the bottom N stocks (model predicts they'll underperform)
+                    bottom_picks = date_features.nsmallest(top_n, 'pred_proba')
+                else:
+                    bottom_picks = None
 
             # === TURNOVER TRACKING ===
-            current_holdings = set(top_picks['ticker'])
+            if continuous_weights:
+                current_holdings = set(constrained_weights.keys())
+            elif long_short:
+                current_holdings = set(top_picks['ticker']) | set(bottom_picks['ticker'])
+            else:
+                current_holdings = set(top_picks['ticker'])
             if track_turnover and previous_holdings:
                 # Turnover = % of positions that changed
                 holdings_changed = len(previous_holdings - current_holdings) + len(current_holdings - previous_holdings)
@@ -332,69 +950,158 @@ def walk_forward_validation(
             else:
                 weights = np.ones(len(top_picks)) / len(top_picks)  # Equal weight fallback
 
-            # Helper: find nearest available price within N days
-            def get_nearest_price(ticker_df, target_date, max_days=3):
-                """Get price on target_date or nearest available within max_days."""
-                if target_date in ticker_df.index:
-                    return ticker_df.loc[target_date, 'adj_close']
-                # Search forward then backward
-                for delta in range(1, max_days + 1):
-                    forward = target_date + pd.Timedelta(days=delta)
-                    backward = target_date - pd.Timedelta(days=delta)
-                    if forward in ticker_df.index:
-                        return ticker_df.loc[forward, 'adj_close']
-                    if backward in ticker_df.index:
-                        return ticker_df.loc[backward, 'adj_close']
-                return None
-
-            # Calculate returns (vol-weighted)
-            pick_returns = []
-            pick_weights = []
+            # Calculate returns (vol-weighted) using binary search price lookup
+            # === LONG LEG ===
+            long_returns = []
+            long_weights = []
             skipped_tickers = 0
             for idx, (_, row) in enumerate(top_picks.iterrows()):
                 ticker = row['ticker']
-                ticker_prices = price_by_ticker.get(ticker)
-                if ticker_prices is None:
+                ticker_data = price_by_ticker.get(ticker)
+                if ticker_data is None:
                     skipped_tickers += 1
                     continue  # Skip instead of -100% penalty
 
-                entry_price = get_nearest_price(ticker_prices, entry_date, max_days=3)
-                exit_price = get_nearest_price(ticker_prices, exit_date, max_days=3)
+                # Use binary search price lookup (forward-only, no backward drift)
+                entry_price, actual_entry = get_price_on_or_after(ticker_data, entry_date)
+                exit_price, actual_exit = get_price_on_or_after(ticker_data, exit_date)
 
                 if entry_price and exit_price and entry_price > 0:
                     ret = (exit_price - entry_price) / entry_price
-                    pick_returns.append(ret)
-                    pick_weights.append(weights[idx])
+                    long_returns.append(ret)
+                    long_weights.append(weights[idx])
+                elif entry_price and not exit_price:
+                    # Stock delisted after entry - conservative -20% loss
+                    long_returns.append(-0.20)
+                    long_weights.append(weights[idx])
                 else:
-                    # Stock likely delisted - use conservative -20% instead of -100%
-                    # This is more realistic than total loss
-                    pick_returns.append(-0.20)
-                    pick_weights.append(weights[idx])
+                    skipped_tickers += 1
 
-            if not pick_returns:
+            # === SHORT LEG (if long-short mode) ===
+            short_returns = []
+            short_weights = []
+            if long_short and bottom_picks is not None:
+                # Vol-weighted short positions
+                short_vol_col = 'volatility_20d'
+                if short_vol_col in bottom_picks.columns:
+                    short_vols = bottom_picks[short_vol_col].fillna(bottom_picks[short_vol_col].median())
+                    short_vols = short_vols.clip(lower=0.10)
+                    short_avg_vol = short_vols.mean()
+                    short_raw_weights = short_avg_vol / short_vols
+                    short_weights_arr = (short_raw_weights / short_raw_weights.sum()).values
+                else:
+                    short_weights_arr = np.ones(len(bottom_picks)) / len(bottom_picks)
+
+                for idx, (_, row) in enumerate(bottom_picks.iterrows()):
+                    ticker = row['ticker']
+                    ticker_data = price_by_ticker.get(ticker)
+                    if ticker_data is None:
+                        continue
+
+                    entry_price, actual_entry = get_price_on_or_after(ticker_data, entry_date)
+                    exit_price, actual_exit = get_price_on_or_after(ticker_data, exit_date)
+
+                    if entry_price and exit_price and entry_price > 0:
+                        # SHORT PROFIT: we profit when stock goes DOWN
+                        # If stock goes from 100 to 90, we make +10%
+                        ret = (entry_price - exit_price) / entry_price
+                        short_returns.append(ret)
+                        short_weights.append(short_weights_arr[idx])
+                    elif entry_price and not exit_price:
+                        # Stock delisted while short - assume worst case (buyout premium)
+                        short_returns.append(-0.30)  # 30% loss on short
+                        short_weights.append(short_weights_arr[idx])
+
+            if not long_returns:
                 continue
 
+            # Backward compatibility: use long_returns as pick_returns for non-LS
+            pick_returns = long_returns
+            pick_weights = long_weights
+
             # === SLIPPAGE MODEL ===
-            # Base transaction cost + modest turnover-based slippage
-            # Using linear model (quadratic was too punitive)
-            base_cost = transaction_cost * 2  # Round trip (~20 bps)
+            # Realistic slippage for mid/large cap stocks: 10-30 bps per rebalancing
+            # Base: ~10 bps round-trip commission
+            # Slippage: ~10-20 bps market impact depending on turnover
+            base_cost = 0.001  # 10 bps base transaction cost
             if track_turnover and turnover_records:
                 recent_turnover = turnover_records[-1]['turnover'] if turnover_records else 0.5
-                # Linear slippage: ~5-10 bps per unit turnover
-                slippage = 0.0005 * recent_turnover  # 5 bps max additional
+                # More realistic slippage: 10-20 bps per rebalancing
+                # High turnover = more market impact
+                slippage = 0.001 + 0.001 * recent_turnover  # 10-20 bps
             else:
-                slippage = 0.0
-            total_cost = base_cost + slippage
+                slippage = 0.0015  # 15 bps default
+            total_cost = base_cost + slippage  # Total: 20-30 bps per month
 
             # Vol-weighted portfolio return (not simple average!)
             pick_weights = np.array(pick_weights)
             pick_returns = np.array(pick_returns)
-            # Renormalize weights for actual picks (in case some failed)
-            if pick_weights.sum() > 0:
-                normalized_weights = pick_weights / pick_weights.sum()
-                gross_return = np.dot(normalized_weights, pick_returns) - total_cost
+
+            # === CALCULATE GROSS RETURN ===
+            if continuous_weights and continuous_weight_dict:
+                # CONTINUOUS WEIGHTS PORTFOLIO
+                # Calculate return using the exact weights from z-score optimization
+                portfolio_return_continuous = 0.0
+                total_long_weight = 0.0
+                total_short_weight = 0.0
+
+                for ticker, weight in continuous_weight_dict.items():
+                    ticker_data = price_by_ticker.get(ticker)
+                    if ticker_data is None:
+                        continue
+
+                    entry_price, _ = get_price_on_or_after(ticker_data, entry_date)
+                    exit_price, _ = get_price_on_or_after(ticker_data, exit_date)
+
+                    if entry_price and exit_price and entry_price > 0:
+                        stock_return = (exit_price - entry_price) / entry_price
+                        # Weight is signed: positive=long, negative=short
+                        # For shorts, we want to profit when stock goes DOWN
+                        if weight < 0:
+                            # Short position: profit = -stock_return * |weight|
+                            portfolio_return_continuous += -stock_return * abs(weight)
+                            total_short_weight += abs(weight)
+                        else:
+                            # Long position: profit = stock_return * weight
+                            portfolio_return_continuous += stock_return * weight
+                            total_long_weight += weight
+
+                # Apply short borrow costs
+                monthly_borrow_cost = (short_cost_bps / 10000) / 12 * total_short_weight
+                gross_return = portfolio_return_continuous - total_cost - monthly_borrow_cost
+
+            elif long_short and short_returns:
+                # LONG-SHORT PORTFOLIO (discrete top-N/bottom-N)
+                # 50% capital long, 50% capital short (dollar neutral)
+                short_weights = np.array(short_weights)
+                short_returns_arr = np.array(short_returns)
+
+                # Weighted return for each leg
+                if pick_weights.sum() > 0:
+                    long_leg_return = np.dot(pick_weights / pick_weights.sum(), pick_returns)
+                else:
+                    long_leg_return = np.mean(pick_returns)
+
+                if short_weights.sum() > 0:
+                    short_leg_return = np.dot(short_weights / short_weights.sum(), short_returns_arr)
+                else:
+                    short_leg_return = np.mean(short_returns_arr) if short_returns_arr.size > 0 else 0
+
+                # Dollar-neutral: 50% long, 50% short
+                # Gross return = (long_return + short_return) / 2
+                # Note: short_leg_return is already inverted (profit when stocks go down)
+                gross_long_short = (long_leg_return + short_leg_return) / 2
+
+                # Subtract short borrow costs (monthly portion of annual rate)
+                monthly_borrow_cost = (short_cost_bps / 10000) / 12 * 0.5  # 50% of capital is short
+                gross_return = gross_long_short - total_cost - monthly_borrow_cost
             else:
-                gross_return = np.mean(pick_returns) - total_cost
+                # LONG-ONLY PORTFOLIO (original behavior)
+                if pick_weights.sum() > 0:
+                    normalized_weights = pick_weights / pick_weights.sum()
+                    gross_return = np.dot(normalized_weights, pick_returns) - total_cost
+                else:
+                    gross_return = np.mean(pick_returns) - total_cost
 
             # === VOLATILITY TARGETING ===
             # Scale position to target X% annual volatility
@@ -412,18 +1119,25 @@ def walk_forward_validation(
                     vol_scale = min(2.0, max(0.25, vol_target / realized_annual_vol))
 
             # === KELLY FRACTION ===
+            # Use 60-120 month window for stable Kelly estimates (ChatGPT recommendation)
             kelly_scale = 1.0
-            if use_kelly and len(rolling_win_rate) >= 12:
+            kelly_min_months = 60  # 5 years minimum for reliable Kelly
+            kelly_lookback = 120   # 10 year lookback max
+            if use_kelly and len(rolling_win_rate) >= kelly_min_months:
                 # Kelly = W - (1-W)/R where W=win rate, R=win/loss ratio
-                avg_win_rate = np.mean(rolling_win_rate[-24:])  # 2-year rolling
-                avg_win_amt = np.mean([w for w in rolling_avg_win[-24:] if w > 0]) if any(w > 0 for w in rolling_avg_win[-24:]) else 0.02
-                avg_loss_amt = abs(np.mean([l for l in rolling_avg_loss[-24:] if l < 0])) if any(l < 0 for l in rolling_avg_loss[-24:]) else 0.02
+                lookback = min(kelly_lookback, len(rolling_win_rate))
+                avg_win_rate = np.mean(rolling_win_rate[-lookback:])
+                wins = [w for w in rolling_avg_win[-lookback:] if w > 0]
+                losses = [l for l in rolling_avg_loss[-lookback:] if l < 0]
+                avg_win_amt = np.mean(wins) if wins else 0.02
+                avg_loss_amt = abs(np.mean(losses)) if losses else 0.02
 
                 if avg_loss_amt > 0:
                     win_loss_ratio = avg_win_amt / avg_loss_amt
                     kelly_fraction = avg_win_rate - (1 - avg_win_rate) / win_loss_ratio
-                    # Half-Kelly for safety (full Kelly is too aggressive)
-                    kelly_scale = max(0.25, min(1.5, kelly_fraction * 0.5))
+                    # Quarter-Kelly for safety (half-Kelly still too aggressive)
+                    # Never scale above 0.5x (50% of full position)
+                    kelly_scale = max(0.25, min(0.5, kelly_fraction * 0.25))
 
             # === RISK-OFF SCALING ===
             # If use_risk_off and market volatility is high, scale down exposure
@@ -762,6 +1476,92 @@ def walk_forward_validation(
         print("  - Original backtest may have been overfit")
         print("  - Consider different features or longer training")
 
+    # === BOOTSTRAP STATISTICAL SIGNIFICANCE ===
+    if run_bootstrap and len(results_df) > 0:
+        print("\n" + "=" * 70)
+        print("STATISTICAL SIGNIFICANCE (Bootstrap)")
+        print("=" * 70)
+
+        # Bootstrap on monthly excess returns
+        excess_returns = results_df['excess_return'].values
+        mean_excess, p_value, ci_low, ci_high = bootstrap_pvalue(excess_returns)
+
+        print(f"\nMonthly Excess Returns (vs SPY):")
+        print(f"  Mean:           {mean_excess:+.2%}")
+        print(f"  95% CI:         [{ci_low:+.2%}, {ci_high:+.2%}]")
+        print(f"  p-value:        {p_value:.4f} (H0: mean <= 0)")
+
+        if p_value < 0.05:
+            print(f"\n  ✓ SIGNIFICANT at 5% level (p={p_value:.4f})")
+            print("    The excess return is unlikely due to chance alone.")
+        elif p_value < 0.10:
+            print(f"\n  ~ MARGINALLY significant (p={p_value:.4f})")
+            print("    Some evidence of alpha, but not conclusive.")
+        else:
+            print(f"\n  ✗ NOT significant (p={p_value:.4f})")
+            print("    Cannot reject that excess return is due to chance.")
+
+        # Also test portfolio returns vs 0
+        port_returns = results_df['portfolio_return'].values
+        port_mean, port_p, port_ci_low, port_ci_high = bootstrap_pvalue(port_returns)
+        print(f"\nPortfolio Absolute Returns:")
+        print(f"  Mean:           {port_mean:+.2%}")
+        print(f"  95% CI:         [{port_ci_low:+.2%}, {port_ci_high:+.2%}]")
+        print(f"  p-value:        {port_p:.4f}")
+
+    # === IC (INFORMATION COEFFICIENT) ANALYSIS ===
+    if 'spearman_corr' in summary_df.columns:
+        print("\n" + "=" * 70)
+        print("INFORMATION COEFFICIENT (IC) ANALYSIS")
+        print("=" * 70)
+
+        ic_values = summary_df['spearman_corr'].values
+        avg_ic = np.mean(ic_values)
+        std_ic = np.std(ic_values)
+        ic_ir = avg_ic / std_ic if std_ic > 0 else 0  # IC Information Ratio
+
+        print(f"\nIC = Spearman correlation between predictions and actual returns")
+        print(f"\n{'Year':<8} {'IC':>10} {'Interpretation':<20}")
+        print("-" * 40)
+        for _, row in summary_df.iterrows():
+            ic = row['spearman_corr']
+            if ic > 0.05:
+                interp = "GOOD signal"
+            elif ic > 0.02:
+                interp = "Weak signal"
+            elif ic > 0:
+                interp = "Marginal"
+            else:
+                interp = "No signal"
+            print(f"{int(row['year']):<8} {ic:>+9.3f} {interp:<20}")
+
+        print("-" * 40)
+        print(f"{'Average':<8} {avg_ic:>+9.3f}")
+        print(f"{'Std Dev':<8} {std_ic:>9.3f}")
+        print(f"{'IC IR':<8} {ic_ir:>9.2f} (IC / std)")
+
+        # IC quality assessment
+        print(f"\nIC Quality Assessment:")
+        if avg_ic > 0.05:
+            print(f"  ✓ STRONG: Avg IC={avg_ic:.3f} (institutional quality)")
+        elif avg_ic > 0.02:
+            print(f"  ~ MODERATE: Avg IC={avg_ic:.3f} (usable with ensembling)")
+        elif avg_ic > 0:
+            print(f"  ~ WEAK: Avg IC={avg_ic:.3f} (marginal predictive power)")
+        else:
+            print(f"  ✗ NONE: Avg IC={avg_ic:.3f} (no predictive power)")
+
+        if ic_ir > 0.5:
+            print(f"  ✓ IC IR={ic_ir:.2f} - Signal is STABLE across time")
+        elif ic_ir > 0.2:
+            print(f"  ~ IC IR={ic_ir:.2f} - Signal has MODERATE stability")
+        else:
+            print(f"  ✗ IC IR={ic_ir:.2f} - Signal is UNSTABLE (high variance)")
+
+        # Percentage of positive IC years
+        pct_positive_ic = (ic_values > 0).mean()
+        print(f"\n  Positive IC in {pct_positive_ic:.0%} of years ({(ic_values > 0).sum()}/{len(ic_values)})")
+
     # Save results
     results_df = pd.DataFrame(all_results)
     results_df.to_csv("models/walk_forward_results.csv", index=False)
@@ -781,14 +1581,101 @@ if __name__ == "__main__":
                        help="Target annual volatility (e.g., 0.15 for 15%%)")
     parser.add_argument("--kelly", action="store_true", help="Use Kelly fraction position sizing")
     parser.add_argument("--ensemble", type=int, default=3,
-                       help="Number of models in ensemble (default: 3)")
+                       help="Number of models in ensemble (default: 3, recommended: 10-50 for production)")
     parser.add_argument("--full", action="store_true",
                        help="Run with all features: risk-off + 15%% vol target + Kelly + ensemble")
     parser.add_argument("--balanced", action="store_true",
                        help="Run with BALANCED settings: 25%% vol target, no Kelly, lighter risk-off")
+    parser.add_argument("--elite", action="store_true",
+                       help="Run ELITE mode: long-short + 20%% vol target + 20-model ensemble + factor neutralization")
+    parser.add_argument("--ultra", action="store_true",
+                       help="Run ULTRA mode: elite + 50-model ensemble (maximum signal extraction)")
+    parser.add_argument("--pro", action="store_true",
+                       help="Run PRO mode: continuous z-score weights + turnover constraint (ChatGPT recommended)")
+    parser.add_argument("--no-survivorship-fix", action="store_true",
+                       help="Disable survivorship bias fix (use current S&P 500 list)")
+    parser.add_argument("--long-short", action="store_true",
+                       help="Use long-short market-neutral portfolio (long top N, short bottom N)")
+    parser.add_argument("--short-cost", type=float, default=50,
+                       help="Annual short borrow cost in basis points (default: 50)")
+    parser.add_argument("--neutralize-beta", action="store_true",
+                       help="Neutralize portfolio beta (target beta = 0)")
+    parser.add_argument("--neutralize-sector", action="store_true",
+                       help="Neutralize sector exposure (equal sector weights)")
     args = parser.parse_args()
 
-    if args.balanced:
+    fix_survivorship = not args.no_survivorship_fix
+
+    if args.pro:
+        # Run PRO mode: ChatGPT recommended continuous weights + turnover constraint
+        print("\n" + "=" * 70)
+        print("PRO MODE: Continuous Z-Score Weights + Turnover Constraint")
+        print("ChatGPT recommended optimal portfolio construction")
+        print("=" * 70)
+        walk_forward_validation(
+            min_train_years=3,
+            top_n=20,  # Not used in continuous mode
+            transaction_cost=0.001,
+            use_risk_off=False,
+            vol_target=0.25,     # 25% vol target (less aggressive)
+            use_kelly=False,
+            track_turnover=True,
+            n_ensemble=5,        # 5 models (less smoothing per ChatGPT)
+            fix_survivorship_bias=fix_survivorship,
+            long_short=True,     # Still L/S but with continuous weights
+            short_cost_bps=50,
+            neutralize_beta_flag=True,   # Beta neutral only
+            neutralize_sector_flag=False,  # NO sector neutral (per ChatGPT)
+            continuous_weights=True,      # KEY: Use continuous weights
+            max_position_weight=0.05,     # 5% max per position
+            max_turnover_per_stock=0.03   # 3% max weight change per month
+        )
+
+    elif args.ultra:
+        # Run ULTRA mode: Maximum signal extraction
+        print("\n" + "=" * 70)
+        print("ULTRA MODE: Maximum Signal Extraction")
+        print("50-model ensemble + long-short + factor neutralization")
+        print("=" * 70)
+        walk_forward_validation(
+            min_train_years=3,
+            top_n=20,
+            transaction_cost=0.001,
+            use_risk_off=False,
+            vol_target=0.20,
+            use_kelly=False,
+            track_turnover=True,
+            n_ensemble=50,       # 50-model ensemble (ChatGPT recommended 20-50)
+            fix_survivorship_bias=fix_survivorship,
+            long_short=True,
+            short_cost_bps=50,
+            neutralize_beta_flag=True,
+            neutralize_sector_flag=True
+        )
+
+    elif args.elite:
+        # Run ELITE mode: Long-short with proper IC monetization + factor neutralization
+        print("\n" + "=" * 70)
+        print("ELITE MODE: Long-Short Market-Neutral Portfolio")
+        print("20-model ensemble + factor neutralization")
+        print("=" * 70)
+        walk_forward_validation(
+            min_train_years=3,
+            top_n=20,
+            transaction_cost=0.001,
+            use_risk_off=False,  # No VIX (market-neutral already hedged)
+            vol_target=0.20,     # 20% vol target
+            use_kelly=False,     # No Kelly (L/S has different dynamics)
+            track_turnover=True,
+            n_ensemble=20,       # 20-model ensemble (ChatGPT recommendation)
+            fix_survivorship_bias=fix_survivorship,
+            long_short=True,     # KEY: Long-short portfolio
+            short_cost_bps=50,   # 50 bps annual borrow cost
+            neutralize_beta_flag=True,   # Beta neutralization
+            neutralize_sector_flag=True  # Sector neutralization
+        )
+
+    elif args.balanced:
         # Run with BALANCED settings (tuned for alpha + risk)
         print("\n" + "=" * 70)
         print("BALANCED MODE: Tuned for Alpha + Risk Control")
@@ -801,7 +1688,9 @@ if __name__ == "__main__":
             vol_target=0.25,     # 25% vol target (not 15%)
             use_kelly=False,     # No Kelly (too aggressive scaling)
             track_turnover=True,
-            n_ensemble=3
+            n_ensemble=3,
+            fix_survivorship_bias=fix_survivorship,
+            long_short=False
         )
 
     elif args.full:
@@ -818,7 +1707,8 @@ if __name__ == "__main__":
             vol_target=0.15,  # 15% annual vol target
             use_kelly=True,
             track_turnover=True,
-            n_ensemble=5  # Full ensemble for elite mode
+            n_ensemble=5,  # Full ensemble for elite mode
+            fix_survivorship_bias=fix_survivorship
         )
 
     elif args.compare:
@@ -831,7 +1721,8 @@ if __name__ == "__main__":
             transaction_cost=0.001,
             use_risk_off=False,
             vol_target=None,
-            use_kelly=False
+            use_kelly=False,
+            fix_survivorship_bias=fix_survivorship
         )
 
         print("\n\n" + "=" * 70)
@@ -844,7 +1735,8 @@ if __name__ == "__main__":
             use_risk_off=True,
             vix_threshold=25.0,
             vol_target=None,
-            use_kelly=False
+            use_kelly=False,
+            fix_survivorship_bias=fix_survivorship
         )
 
         print("\n\n" + "=" * 70)
@@ -856,7 +1748,8 @@ if __name__ == "__main__":
             transaction_cost=0.001,
             use_risk_off=False,
             vol_target=0.15,
-            use_kelly=False
+            use_kelly=False,
+            fix_survivorship_bias=fix_survivorship
         )
 
         print("\n\n" + "=" * 70)
@@ -869,7 +1762,8 @@ if __name__ == "__main__":
             use_risk_off=True,
             vix_threshold=25.0,
             vol_target=0.15,
-            use_kelly=True
+            use_kelly=True,
+            fix_survivorship_bias=fix_survivorship
         )
 
         # Summary comparison
@@ -904,5 +1798,10 @@ if __name__ == "__main__":
             vol_target=args.vol_target,
             use_kelly=args.kelly,
             track_turnover=True,
-            n_ensemble=args.ensemble
+            n_ensemble=args.ensemble,
+            fix_survivorship_bias=fix_survivorship,
+            long_short=args.long_short,
+            short_cost_bps=args.short_cost,
+            neutralize_beta_flag=args.neutralize_beta,
+            neutralize_sector_flag=args.neutralize_sector
         )

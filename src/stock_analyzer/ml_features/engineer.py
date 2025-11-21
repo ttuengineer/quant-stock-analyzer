@@ -49,6 +49,21 @@ class FeatureEngineer:
         logger.info("Starting feature engineering (FAST vectorized version)")
         logger.info("=" * 60)
 
+        # 0. Load sector data for industry-neutral residuals
+        logger.info("Loading sector data...")
+        try:
+            meta_df = self.db.get_meta()
+            if meta_df is not None and len(meta_df) > 0 and 'sector' in meta_df.columns:
+                self._sector_map = dict(zip(meta_df['ticker'], meta_df['sector']))
+                unique_sectors = meta_df['sector'].nunique()
+                logger.info(f"Loaded sector data for {len(self._sector_map)} stocks ({unique_sectors} sectors)")
+            else:
+                self._sector_map = {}
+                logger.warning("No sector data found - skipping industry-neutral residuals")
+        except Exception as e:
+            self._sector_map = {}
+            logger.warning(f"Failed to load sector data: {e}")
+
         # 1. Load all data
         logger.info("Loading price data...")
         prices = self.db.get_prices(start_date=start_date, end_date=end_date)
@@ -154,6 +169,28 @@ class FeatureEngineer:
                 for col in rank_cols:
                     if col in df.columns:
                         df[f'{col}_rank'] = df[col].rank(pct=True, na_option='keep')
+
+                # === INDUSTRY-NEUTRAL RESIDUALS (professional upgrade!) ===
+                # For each feature, subtract the sector mean to remove industry effects
+                # This reduces beta and improves signal-to-noise
+                if hasattr(self, '_sector_map') and self._sector_map:
+                    df['sector'] = df['ticker'].map(self._sector_map)
+
+                    # Features to residualize
+                    resid_cols = [
+                        'return_1d', 'return_3d', 'return_5d',
+                        'return_1m', 'return_3m', 'return_6m',
+                        'volatility_20d', 'volatility_60d',
+                        'dist_from_sma_50', 'dist_from_sma_200',
+                        'volume_ratio_20', 'volume_zscore'
+                    ]
+
+                    for col in resid_cols:
+                        if col in df.columns:
+                            # Compute sector mean for this date
+                            sector_means = df.groupby('sector')[col].transform('mean')
+                            # Residual = raw value - sector mean
+                            df[f'{col}_resid'] = df[col] - sector_means
 
                 # === TOP-DECILE LABELING (key improvement!) ===
                 # Instead of "beat SPY yes/no", label TOP 10% of future returns as 1
