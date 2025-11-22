@@ -164,7 +164,12 @@ class FeatureEngineer:
                     'dist_from_sma_50', 'dist_from_sma_200',
                     'dist_from_52w_high', 'dist_from_52w_low',
                     # Volume
-                    'volume_ratio_20', 'volume_ratio_60', 'volume_zscore', 'volume_5d_ratio'
+                    'volume_ratio_20', 'volume_ratio_60', 'volume_zscore', 'volume_5d_ratio',
+                    # Rolling z-scores (ChatGPT)
+                    'return_1m_zscore', 'return_3m_zscore', 'vol_zscore_rolling', 'volume_zscore_rolling',
+                    # Nonlinear interactions (ChatGPT)
+                    'mom_vol_interaction', 'reversal_vol_interaction', 'sma_vol_interaction',
+                    'high_mom_interaction', 'vol_regime_interaction'
                 ]
                 for col in rank_cols:
                     if col in df.columns:
@@ -182,7 +187,12 @@ class FeatureEngineer:
                         'return_1m', 'return_3m', 'return_6m',
                         'volatility_20d', 'volatility_60d',
                         'dist_from_sma_50', 'dist_from_sma_200',
-                        'volume_ratio_20', 'volume_zscore'
+                        'volume_ratio_20', 'volume_zscore',
+                        # Rolling z-scores (ChatGPT)
+                        'return_1m_zscore', 'return_3m_zscore',
+                        # Nonlinear interactions (ChatGPT)
+                        'mom_vol_interaction', 'reversal_vol_interaction',
+                        'vol_regime_interaction'
                     ]
 
                     for col in resid_cols:
@@ -192,15 +202,87 @@ class FeatureEngineer:
                             # Residual = raw value - sector mean
                             df[f'{col}_resid'] = df[col] - sector_means
 
-                # === TOP-DECILE LABELING (key improvement!) ===
-                # Instead of "beat SPY yes/no", label TOP 10% of future returns as 1
-                # This creates a cleaner signal - we want to find the BEST stocks, not just "above average"
+                # === MONTHLY CROSS-SECTIONAL Z-SCORE NORMALIZATION (ChatGPT) ===
+                # Normalize ALL features to z-scores within each month
+                # This removes time-varying scale effects and makes features comparable
+                zscore_cols = [
+                    'return_1d', 'return_3d', 'return_5d',
+                    'return_1m', 'return_3m', 'return_6m', 'return_12m',
+                    'volatility_20d', 'volatility_60d',
+                    'dist_from_sma_50', 'dist_from_sma_200',
+                    'dist_from_52w_high', 'dist_from_52w_low',
+                    'volume_ratio_20', 'volume_ratio_60', 'volume_zscore', 'volume_5d_ratio',
+                    'return_1m_zscore', 'return_3m_zscore',
+                    'mom_vol_interaction', 'reversal_vol_interaction',
+                    'sma_vol_interaction', 'high_mom_interaction', 'vol_regime_interaction'
+                ]
+                for col in zscore_cols:
+                    if col in df.columns:
+                        col_mean = df[col].mean()
+                        col_std = df[col].std()
+                        if col_std > 0:
+                            df[f'{col}_znorm'] = (df[col] - col_mean) / col_std
+                        else:
+                            df[f'{col}_znorm'] = 0.0
+
+                # === MULTI-HORIZON SMOOTHED RESIDUAL RETURN TARGET ===
+                # Use average of 1-month and 2-month returns for smoother, more stable signal
+                # This reduces noise from single-month outliers
                 if 'future_return' in df.columns:
-                    # Rank future returns within this date (0 to 1)
+                    # Create smoothed return (average of 1m and 2m if available)
+                    if 'future_return_2m' in df.columns:
+                        # Weighted average: 60% 1-month, 40% 2-month (favor shorter horizon)
+                        df['future_return_smooth'] = df.apply(
+                            lambda row: row['future_return'] if pd.isna(row['future_return_2m'])
+                            else 0.6 * row['future_return'] + 0.4 * row['future_return_2m'],
+                            axis=1
+                        )
+                    else:
+                        df['future_return_smooth'] = df['future_return']
+
+                    # Compute sector-neutral residual return on SMOOTHED returns
+                    if 'sector' in df.columns and df['sector'].notna().any():
+                        sector_mean_return = df.groupby('sector')['future_return_smooth'].transform('mean')
+                        df['future_return_resid'] = df['future_return_smooth'] - sector_mean_return
+                    else:
+                        df['future_return_resid'] = df['future_return_smooth'] - df['future_return_smooth'].mean()
+
+                    # Rank RESIDUAL returns within this date (0 to 1)
+                    df['future_return_resid_rank'] = df['future_return_resid'].rank(pct=True, na_option='keep')
+
+                    # Also keep raw return rank for comparison
                     df['future_return_rank'] = df['future_return'].rank(pct=True, na_option='keep')
-                    # Top 10% = 1, rest = 0 (clear signal, ~10% positive class)
-                    df['target_binary'] = (df['future_return_rank'] >= 0.9).astype(int)
+
+                    # === VOLATILITY-SCALED TARGET (ChatGPT: stabilizes distribution) ===
+                    # target_scaled = residual_return / realized_vol
+                    # This reduces heteroscedasticity and makes high-vol stocks comparable to low-vol
+                    if 'volatility_20d' in df.columns:
+                        # Clip volatility to avoid division by tiny numbers
+                        vol_clipped = df['volatility_20d'].clip(lower=0.10)  # Min 10% annualized vol
+                        df['target_vol_scaled'] = df['future_return_resid'] / vol_clipped
+                        # Winsorize to ±3 standard deviations to reduce outlier impact
+                        target_mean = df['target_vol_scaled'].mean()
+                        target_std = df['target_vol_scaled'].std()
+                        df['target_vol_scaled'] = df['target_vol_scaled'].clip(
+                            lower=target_mean - 3*target_std,
+                            upper=target_mean + 3*target_std
+                        )
+                    else:
+                        df['target_vol_scaled'] = df['future_return_resid']
+
+                    # === CONTINUOUS REGRESSION TARGET (ChatGPT: uses all information) ===
+                    # Cross-sectional z-score of residual returns (mean=0, std=1 each month)
+                    resid_mean = df['future_return_resid'].mean()
+                    resid_std = df['future_return_resid'].std()
+                    if resid_std > 0:
+                        df['target_regression'] = (df['future_return_resid'] - resid_mean) / resid_std
+                    else:
+                        df['target_regression'] = 0.0
+
+                    # Target: Top 10% of smoothed RESIDUAL returns = 1
+                    df['target_binary'] = (df['future_return_resid_rank'] >= 0.9).astype(int)
                 else:
+                    df['future_return_resid'] = None
                     df['target_binary'] = None
 
                 all_features.append(df)
@@ -321,17 +403,83 @@ class FeatureEngineer:
             volume_zscore = None
             volume_5d_ratio = None
 
-        # === TARGET: future return (raw - will be ranked cross-sectionally later!) ===
-        future = ticker_df[ticker_df.index > date].head(forward_window + 5)
-        if len(future) >= forward_window and spy_info.get('spy_return') is not None:
-            future_price = future.iloc[forward_window - 1]['adj_close']
-            stock_return = (future_price - current_price) / current_price
-            excess = stock_return - spy_info['spy_return']
-            # Store raw future return - will create top-decile label later
-            future_return = stock_return
+        # === ROLLING Z-SCORE FEATURES (ChatGPT recommendation) ===
+        # Standardize features using 60-day rolling window to remove drift
+        def rolling_zscore(series, window=60):
+            """Compute z-score relative to rolling window."""
+            if len(series) < window:
+                return None
+            recent = series.tail(window)
+            mean = recent.mean()
+            std = recent.std()
+            if std > 0:
+                return (series.iloc[-1] - mean) / std
+            return None
+
+        # Returns rolling z-scores
+        ret_series = hist['adj_close'].pct_change()
+        return_1m_zscore = rolling_zscore(ret_series.rolling(21).sum(), 60)
+        return_3m_zscore = rolling_zscore(ret_series.rolling(63).sum(), 120)
+
+        # Volatility rolling z-score
+        vol_series = ret_series.rolling(20).std() * np.sqrt(252)
+        vol_zscore_rolling = rolling_zscore(vol_series, 60)
+
+        # Volume rolling z-score
+        if 'volume' in hist.columns:
+            vol_ma = hist['volume'].rolling(20).mean()
+            volume_zscore_rolling = rolling_zscore(vol_ma, 60)
         else:
-            excess = None
-            future_return = None
+            volume_zscore_rolling = None
+
+        # === NONLINEAR INTERACTION FEATURES (ChatGPT recommendation) ===
+        # These capture conditional effects (e.g., momentum is stronger with high volume)
+
+        # Momentum × Volume (high volume confirms momentum)
+        mom_vol_interaction = None
+        if return_1m is not None and volume_ratio_20 is not None:
+            mom_vol_interaction = return_1m * np.log1p(volume_ratio_20)
+
+        # Reversal × Volatility (reversal stronger in high vol)
+        reversal_vol_interaction = None
+        if return_5d is not None and vol_20d is not None:
+            reversal_vol_interaction = -return_5d * vol_20d  # Negative = mean reversion
+
+        # Distance from SMA × Volume (breakouts with volume)
+        sma_vol_interaction = None
+        if dist_sma_50 is not None and volume_ratio_20 is not None:
+            sma_vol_interaction = dist_sma_50 * np.log1p(volume_ratio_20)
+
+        # High/Low × Momentum (52-week high with momentum = continuation)
+        high_mom_interaction = None
+        if dist_52w_high is not None and return_3m is not None:
+            high_mom_interaction = -dist_52w_high * return_3m  # Near high + positive mom
+
+        # Volatility regime interaction (low vol + momentum = stronger signal)
+        vol_regime_interaction = None
+        if vol_20d is not None and return_1m is not None and spy_info.get('market_volatility'):
+            relative_vol = vol_20d / spy_info['market_volatility'] if spy_info['market_volatility'] > 0 else 1
+            vol_regime_interaction = return_1m / (relative_vol + 0.5)  # Dampens high-vol signals
+
+        # === TARGET: Multi-horizon smoothed return (reduces noise) ===
+        # Use average of 21-day and 42-day returns for smoother signal
+        future = ticker_df[ticker_df.index > date].head(forward_window * 2 + 10)
+
+        future_return = None
+        future_return_2m = None
+        excess = None
+
+        # 1-month return (primary)
+        if len(future) >= forward_window and spy_info.get('spy_return') is not None:
+            future_price_1m = future.iloc[forward_window - 1]['adj_close']
+            stock_return_1m = (future_price_1m - current_price) / current_price
+            excess = stock_return_1m - spy_info['spy_return']
+            future_return = stock_return_1m
+
+        # 2-month return (secondary, for smoothing)
+        if len(future) >= forward_window * 2:
+            future_price_2m = future.iloc[forward_window * 2 - 1]['adj_close']
+            future_return_2m = (future_price_2m - current_price) / current_price
 
         return {
             'ticker': ticker,
@@ -358,12 +506,24 @@ class FeatureEngineer:
             'volume_ratio_60': volume_ratio_60,
             'volume_zscore': volume_zscore,
             'volume_5d_ratio': volume_5d_ratio,
+            # Rolling z-scores (ChatGPT: removes drift, stabilizes signal)
+            'return_1m_zscore': return_1m_zscore,
+            'return_3m_zscore': return_3m_zscore,
+            'vol_zscore_rolling': vol_zscore_rolling,
+            'volume_zscore_rolling': volume_zscore_rolling,
+            # Nonlinear interactions (ChatGPT: captures conditional effects)
+            'mom_vol_interaction': mom_vol_interaction,
+            'reversal_vol_interaction': reversal_vol_interaction,
+            'sma_vol_interaction': sma_vol_interaction,
+            'high_mom_interaction': high_mom_interaction,
+            'vol_regime_interaction': vol_regime_interaction,
             # Market regime
             'market_volatility': spy_info.get('market_volatility'),
             'market_trend': spy_info.get('market_trend'),
             # Target (raw values - will be ranked cross-sectionally)
             'target_excess': excess,
-            'future_return': future_return  # Raw return for top-decile labeling
+            'future_return': future_return,  # 1-month raw return
+            'future_return_2m': future_return_2m  # 2-month raw return for smoothing
         }
 
     def _get_monthly_dates(self, prices: pd.DataFrame) -> list:

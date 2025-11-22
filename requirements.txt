@@ -53,6 +53,11 @@ lightgbm>=4.5.0
 catboost>=1.2.5
 joblib>=1.4.0
 
+# Portfolio Optimization (ChatGPT recommended)
+cvxpy>=1.4.0
+osqp>=0.6.0
+ecos>=2.0.0
+
 # NLP & Sentiment Analysis (optional - comment out if causing issues)
 transformers>=4.40.0
 torch>=2.3.0

@@ -25,8 +25,26 @@ from stock_analyzer.database import Database
 
 # ML imports
 from sklearn.metrics import roc_auc_score
+from sklearn.linear_model import RidgeClassifier
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.preprocessing import StandardScaler
 from scipy.stats import spearmanr
 import xgboost as xgb
+import lightgbm as lgb
+
+# Portfolio optimizer (ChatGPT recommended)
+try:
+    from portfolio_optimizer import LongOnlyOptimizer
+    OPTIMIZER_AVAILABLE = True
+except ImportError:
+    OPTIMIZER_AVAILABLE = False
+
+# Factor-neutral optimizer (ChatGPT institutional-grade)
+try:
+    from factor_model import FactorNeutralOptimizer
+    FACTOR_NEUTRAL_AVAILABLE = True
+except ImportError:
+    FACTOR_NEUTRAL_AVAILABLE = False
 
 
 def bootstrap_pvalue(returns, n_iter=10000, seed=42):
@@ -460,7 +478,13 @@ def walk_forward_validation(
     neutralize_sector_flag: bool = False,  # Neutralize sector exposure
     continuous_weights: bool = False,  # Use continuous z-score weights (vs top-N)
     max_position_weight: float = 0.05,  # Max weight per position (5%)
-    max_turnover_per_stock: float = 0.03  # Max weight change per stock per month (3%)
+    max_turnover_per_stock: float = 0.03,  # Max weight change per stock per month (3%)
+    use_optimizer: bool = False,  # Use CVXPY portfolio optimizer (ChatGPT institutional-grade)
+    use_factor_neutral: bool = False,  # Use factor-neutral optimizer (removes systematic risk)
+    use_ranker: bool = False,  # Use LightGBM ranking model (predicts continuous residual ranks)
+    use_meta_ensemble: bool = False,  # Use meta-model ensemble (XGB + LGBM + Ridge)
+    use_stacked_blend: bool = False,  # Use stacked alpha blending (2-layer: XGB+LGBM → Ridge meta-learner)
+    use_regression: bool = False  # Use XGBRegressor on continuous residual returns (ChatGPT recommended)
 ):
     """
     Walk-forward out-of-sample validation.
@@ -478,6 +502,16 @@ def walk_forward_validation(
     """
     print("=" * 70)
     print("WALK-FORWARD OUT-OF-SAMPLE VALIDATION")
+    if use_factor_neutral:
+        if not FACTOR_NEUTRAL_AVAILABLE:
+            print("ERROR: Factor-neutral optimizer not available. Check factor_model.py")
+            return None
+        print("(FACTOR-NEUTRAL: Removes Market/Sector/Momentum risk before optimization)")
+    if use_optimizer:
+        if not OPTIMIZER_AVAILABLE:
+            print("ERROR: Portfolio optimizer not available. Run: pip install cvxpy")
+            return None
+        print("(CVXPY OPTIMIZER: Beta target 1.0±0.1 | Vol target 16% | Sector max 20%)")
     if continuous_weights:
         print(f"(CONTINUOUS Z-SCORE WEIGHTS: All stocks, max {max_position_weight*100:.0f}% per position)")
         print(f"(TURNOVER CONSTRAINED: Max {max_turnover_per_stock*100:.0f}% weight change per stock)")
@@ -569,6 +603,12 @@ def walk_forward_validation(
         'dist_from_sma_50', 'dist_from_sma_200',
         'dist_from_52w_high', 'dist_from_52w_low',
         'volume_ratio_20', 'volume_zscore',
+        # ROLLING Z-SCORES (ChatGPT: removes drift, stabilizes signal)
+        'return_1m_zscore', 'return_3m_zscore',
+        'vol_zscore_rolling', 'volume_zscore_rolling',
+        # NONLINEAR INTERACTIONS (ChatGPT: captures conditional effects)
+        'mom_vol_interaction', 'reversal_vol_interaction',
+        'sma_vol_interaction', 'high_mom_interaction', 'vol_regime_interaction',
         # CROSS-SECTIONAL RANKINGS
         'return_1d_rank', 'return_3d_rank', 'return_5d_rank',
         'return_1m_rank', 'return_3m_rank', 'return_6m_rank',
@@ -576,12 +616,32 @@ def walk_forward_validation(
         'dist_from_sma_50_rank', 'dist_from_sma_200_rank',
         'dist_from_52w_high_rank', 'dist_from_52w_low_rank',
         'volume_ratio_20_rank', 'volume_zscore_rank',
+        # Rolling z-score ranks (ChatGPT)
+        'return_1m_zscore_rank', 'return_3m_zscore_rank',
+        'vol_zscore_rolling_rank', 'volume_zscore_rolling_rank',
+        # Interaction ranks (ChatGPT)
+        'mom_vol_interaction_rank', 'reversal_vol_interaction_rank',
+        'sma_vol_interaction_rank', 'high_mom_interaction_rank', 'vol_regime_interaction_rank',
         # INDUSTRY-NEUTRAL RESIDUALS (professional upgrade!)
         'return_1d_resid', 'return_3d_resid', 'return_5d_resid',
         'return_1m_resid', 'return_3m_resid', 'return_6m_resid',
         'volatility_20d_resid', 'volatility_60d_resid',
         'dist_from_sma_50_resid', 'dist_from_sma_200_resid',
         'volume_ratio_20_resid', 'volume_zscore_resid',
+        # Rolling z-score residuals (ChatGPT)
+        'return_1m_zscore_resid', 'return_3m_zscore_resid',
+        # Interaction residuals (ChatGPT)
+        'mom_vol_interaction_resid', 'reversal_vol_interaction_resid',
+        'vol_regime_interaction_resid',
+        # MONTHLY CROSS-SECTIONAL Z-NORMALIZED (ChatGPT: removes time-varying scale)
+        'return_1d_znorm', 'return_3d_znorm', 'return_5d_znorm',
+        'return_1m_znorm', 'return_3m_znorm', 'return_6m_znorm', 'return_12m_znorm',
+        'volatility_20d_znorm', 'volatility_60d_znorm',
+        'dist_from_sma_50_znorm', 'dist_from_sma_200_znorm',
+        'dist_from_52w_high_znorm', 'dist_from_52w_low_znorm',
+        'volume_ratio_20_znorm', 'volume_ratio_60_znorm', 'volume_zscore_znorm',
+        'mom_vol_interaction_znorm', 'reversal_vol_interaction_znorm',
+        'vol_regime_interaction_znorm',
         # MARKET REGIME
         'market_volatility', 'market_trend'
     ]
@@ -679,6 +739,92 @@ def walk_forward_validation(
     rolling_avg_win = []
     rolling_avg_loss = []
 
+    # === OPTIMIZER SETUP (ChatGPT institutional-grade) ===
+    portfolio_optimizer = None
+    factor_neutral_optimizer = None
+    returns_df_for_opt = None
+    spy_returns_for_opt = None
+    sectors_dict_for_opt = None
+
+    if use_factor_neutral:
+        print("\nInitializing Enterprise-Grade Factor-Neutral optimizer...")
+        factor_neutral_optimizer = FactorNeutralOptimizer(
+            # === POSITION SIZING ===
+            max_weight=0.05,           # Allow up to 5% conviction positions
+            min_weight=0.0,            # NO minimum - allow optimizer to express conviction!
+
+            # === FACTOR CONSTRAINTS (BALANCED) ===
+            target_beta=1.05,          # Slightly above market to offset defensive bias
+            beta_tolerance=0.20,       # Tighter: 0.85-1.25 beta range
+            target_vol=0.22,           # 22% target volatility
+            vol_tolerance=0.10,        # 12-32% vol range
+            max_sector_weight=0.30,    # 30% sector cap
+            momentum_neutral=True,     # Enforce momentum neutrality
+
+            # === ENTERPRISE FEATURES ===
+            n_stocks=40,               # Target positions
+            l2_regularization=0.005,   # Reduced ridge penalty (was 0.01)
+            conviction_gamma=1.5,      # Reduced conviction scaling (was 2.0)
+            regime_aware=True,         # Enable regime detection (crisis/high_vol/normal)
+
+            verbose=True
+        )
+
+        # Build returns DataFrame
+        print("Building returns matrix for factor model...")
+        all_tickers = list(price_by_ticker.keys())
+        returns_dict = {}
+        for ticker in all_tickers:
+            ticker_data = price_by_ticker[ticker]
+            prices_series = pd.Series(ticker_data['prices'], index=ticker_data['dates'])
+            returns_dict[ticker] = prices_series.pct_change()
+        returns_df_for_opt = pd.DataFrame(returns_dict)
+        returns_df_for_opt.index = pd.to_datetime(returns_df_for_opt.index)
+
+        # SPY returns
+        spy_returns_for_opt = spy_prices['adj_close'].pct_change()
+
+        # Load sectors
+        sectors_dict_for_opt = {}
+        if 'sector' in features_df.columns:
+            sector_df = features_df[['ticker', 'sector']].drop_duplicates()
+            sectors_dict_for_opt = dict(zip(sector_df['ticker'], sector_df['sector']))
+
+        print(f"Returns matrix: {returns_df_for_opt.shape[0]} days x {returns_df_for_opt.shape[1]} tickers")
+        print(f"Sectors loaded: {len(set(sectors_dict_for_opt.values()))} unique sectors")
+
+    if use_optimizer:
+        print("\nInitializing CVXPY portfolio optimizer...")
+        portfolio_optimizer = LongOnlyOptimizer(
+            max_weight=0.05,        # Max 5% per position
+            min_weight=0.01,        # Min 1% per position
+            target_beta=1.0,        # Target beta = 1.0
+            beta_tolerance=0.10,    # Beta can be 0.9-1.1
+            target_vol=0.16,        # 16% annual vol target
+            vol_tolerance=0.02,     # Vol can be 14-18%
+            max_sector_weight=0.20, # Max 20% per sector
+            max_turnover=0.25,      # Max 25% turnover per month
+            n_stocks=30,            # Target ~30 stocks
+            verbose=False
+        )
+
+        # Build returns DataFrame for optimizer
+        print("Building returns matrix for covariance estimation...")
+        all_tickers = list(price_by_ticker.keys())
+        returns_dict = {}
+        for ticker in all_tickers:
+            ticker_data = price_by_ticker[ticker]
+            prices_series = pd.Series(ticker_data['prices'], index=ticker_data['dates'])
+            returns_dict[ticker] = prices_series.pct_change()
+        returns_df_for_opt = pd.DataFrame(returns_dict)
+        returns_df_for_opt.index = pd.to_datetime(returns_df_for_opt.index)
+
+        # SPY returns for beta estimation
+        spy_returns_for_opt = spy_prices['adj_close'].pct_change()
+        print(f"Returns matrix: {returns_df_for_opt.shape[0]} days x {returns_df_for_opt.shape[1]} tickers")
+
+    previous_opt_weights = None  # Track optimizer weights for turnover
+
     for test_year in range(first_test_year, years[-1] + 1):
         train_end_year = test_year - 1
 
@@ -731,50 +877,283 @@ def walk_forward_validation(
             continue
 
         # Prepare training data
-        train_clean = train_data[['ticker', 'date', 'target_binary'] + feature_cols].dropna()
-        X_train = train_clean[feature_cols].values
-        y_train = train_clean['target_binary'].values
+        # Select target based on mode
+        if use_regression:
+            # REGRESSION MODE: Predict continuous residual returns (ChatGPT recommended)
+            target_col = 'target_regression'  # Cross-sectional z-score of residual returns
+            if target_col not in train_data.columns:
+                # Fallback to raw residual returns
+                target_col = 'future_return_resid'
+                if target_col not in train_data.columns:
+                    print(f"  Warning: regression targets not found, falling back to target_binary")
+                    target_col = 'target_binary'
+        elif use_ranker:
+            target_col = 'future_return_resid_rank'
+            if target_col not in train_data.columns:
+                print(f"  Warning: {target_col} not found, falling back to target_binary")
+                target_col = 'target_binary'
+        else:
+            target_col = 'target_binary'
 
-        # Calculate scale_pos_weight
-        n_pos = int(y_train.sum())
-        n_neg = len(y_train) - n_pos
-        scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1
+        train_clean = train_data[['ticker', 'date', target_col] + feature_cols].dropna()
+        X_train = train_clean[feature_cols].values
+        y_train = train_clean[target_col].values
+
+        # === TIME-DECAY SAMPLE WEIGHTING (ChatGPT recommendation) ===
+        # Weight recent samples more heavily than older ones
+        # Uses exponential decay: weight = exp(-lambda * months_ago)
+        train_dates = pd.to_datetime(train_clean['date'])
+        max_date = train_dates.max()
+        months_ago = ((max_date - train_dates).dt.days / 30.0).values
+        decay_lambda = 0.02  # ~50% weight after 35 months
+        sample_weights = np.exp(-decay_lambda * months_ago)
+        # Normalize weights to sum to len(samples) for consistent learning rate
+        sample_weights = sample_weights * len(sample_weights) / sample_weights.sum()
 
         print(f"  Training samples: {len(train_clean)}")
-        print(f"  Class balance: {n_pos} pos ({n_pos/len(y_train)*100:.1f}%) / {n_neg} neg")
+        print(f"  Time-decay: oldest weight={sample_weights.min():.2f}, newest={sample_weights.max():.2f}")
 
-        # Train XGBoost ENSEMBLE (multiple seeds for robustness)
-        base_params = {
-            'objective': 'binary:logistic',
-            'max_depth': 4,
-            'learning_rate': 0.01,
-            'n_estimators': 500,
-            'subsample': 0.7,
-            'colsample_bytree': 0.7,
-            'min_child_weight': 5,
-            'gamma': 0.2,
-            'reg_alpha': 0.1,
-            'reg_lambda': 1.0,
-            'scale_pos_weight': scale_pos_weight,
-            'eval_metric': 'auc',
-            'early_stopping_rounds': 30,
-            'verbosity': 0
-        }
+        if use_regression:
+            print(f"  Target: REGRESSION (mean={y_train.mean():.3f}, std={y_train.std():.3f})")
+        elif use_ranker:
+            print(f"  Target: continuous rank (mean={y_train.mean():.3f}, std={y_train.std():.3f})")
+        else:
+            n_pos = int(y_train.sum())
+            n_neg = len(y_train) - n_pos
+            scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1
+            print(f"  Class balance: {n_pos} pos ({n_pos/len(y_train)*100:.1f}%) / {n_neg} neg")
 
         # Use last 20% of training as validation for early stopping
         val_split = int(len(X_train) * 0.8)
         X_tr, X_val = X_train[:val_split], X_train[val_split:]
         y_tr, y_val = y_train[:val_split], y_train[val_split:]
+        # Split sample weights too
+        w_tr, w_val = sample_weights[:val_split], sample_weights[val_split:]
 
         # Train ensemble of models with different random seeds
         models = []
-        for seed_idx in range(n_ensemble):
-            actual_seed = 42 + seed_idx * 17  # Different seeds
-            params = base_params.copy()
-            params['random_state'] = actual_seed
-            model = xgb.XGBClassifier(**params)
-            model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], verbose=False)
-            models.append(model)
+
+        if use_ranker:
+            # === LIGHTGBM RANKING MODEL (predicts continuous residual ranks) ===
+            base_params = {
+                'objective': 'regression',
+                'metric': 'rmse',
+                'max_depth': 5,
+                'learning_rate': 0.02,
+                'n_estimators': 500,
+                'subsample': 0.7,
+                'colsample_bytree': 0.7,
+                'min_child_samples': 20,
+                'reg_alpha': 0.1,
+                'reg_lambda': 1.0,
+                'verbose': -1
+            }
+
+            for seed_idx in range(n_ensemble):
+                actual_seed = 42 + seed_idx * 17
+                params = base_params.copy()
+                params['random_state'] = actual_seed
+                model = lgb.LGBMRegressor(**params)
+                model.fit(
+                    X_tr, y_tr,
+                    eval_set=[(X_val, y_val)],
+                    callbacks=[lgb.early_stopping(30, verbose=False)]
+                )
+                models.append(model)
+
+        elif use_meta_ensemble:
+            # === META-ENSEMBLE: XGB + LGBM + Ridge (diverse model stack) ===
+            # Standardize features for Ridge (tree models don't need it)
+            scaler = StandardScaler()
+            X_tr_scaled = scaler.fit_transform(X_tr)
+            X_val_scaled = scaler.transform(X_val)
+
+            n_pos = int(y_train.sum())
+            n_neg = len(y_train) - n_pos
+            scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1
+
+            # --- Model 1: XGBoost Classifier ---
+            xgb_params = {
+                'objective': 'binary:logistic',
+                'max_depth': 4,
+                'learning_rate': 0.01,
+                'n_estimators': 500,
+                'subsample': 0.7,
+                'colsample_bytree': 0.7,
+                'min_child_weight': 5,
+                'gamma': 0.2,
+                'reg_alpha': 0.1,
+                'reg_lambda': 1.0,
+                'scale_pos_weight': scale_pos_weight,
+                'eval_metric': 'auc',
+                'early_stopping_rounds': 30,
+                'verbosity': 0,
+                'random_state': 42
+            }
+            xgb_model = xgb.XGBClassifier(**xgb_params)
+            xgb_model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], verbose=False)
+
+            # --- Model 2: LightGBM Classifier ---
+            lgb_params = {
+                'objective': 'binary',
+                'metric': 'auc',
+                'max_depth': 5,
+                'learning_rate': 0.02,
+                'n_estimators': 500,
+                'subsample': 0.7,
+                'colsample_bytree': 0.7,
+                'min_child_samples': 20,
+                'reg_alpha': 0.1,
+                'reg_lambda': 1.0,
+                'scale_pos_weight': scale_pos_weight,
+                'verbose': -1,
+                'random_state': 59
+            }
+            lgb_model = lgb.LGBMClassifier(**lgb_params)
+            lgb_model.fit(
+                X_tr, y_tr,
+                eval_set=[(X_val, y_val)],
+                callbacks=[lgb.early_stopping(30, verbose=False)]
+            )
+
+            # --- Model 3: Calibrated Ridge Classifier ---
+            # Ridge needs calibration to output probabilities
+            ridge_base = RidgeClassifier(alpha=1.0, random_state=73)
+            ridge_model = CalibratedClassifierCV(ridge_base, cv=3, method='sigmoid')
+            ridge_model.fit(X_tr_scaled, y_tr)
+
+            # Store models with their scalers
+            models = [
+                ('xgb', xgb_model, None),
+                ('lgb', lgb_model, None),
+                ('ridge', ridge_model, scaler)
+            ]
+            print(f"  META-ENSEMBLE: XGBoost + LightGBM + Ridge")
+
+        elif use_stacked_blend:
+            # === STACKED ALPHA BLENDING (ChatGPT: 2-layer ensemble) ===
+            # Layer 1: Train XGBoost and LightGBM base models
+            # Layer 2: Use their predictions as features for Ridge meta-learner
+            from sklearn.model_selection import cross_val_predict
+            from sklearn.linear_model import LogisticRegression
+
+            n_pos = int(y_train.sum())
+            n_neg = len(y_train) - n_pos
+            scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1
+
+            # Base models for OOF predictions (NO early stopping - not compatible with cross_val_predict)
+            xgb_oof_model = xgb.XGBClassifier(
+                objective='binary:logistic', max_depth=4, learning_rate=0.01,
+                n_estimators=200, subsample=0.7, colsample_bytree=0.7,
+                scale_pos_weight=scale_pos_weight, eval_metric='auc',
+                verbosity=0, random_state=42
+            )
+
+            lgb_oof_model = lgb.LGBMClassifier(
+                objective='binary', max_depth=5, learning_rate=0.02,
+                n_estimators=200, subsample=0.7, colsample_bytree=0.7,
+                scale_pos_weight=scale_pos_weight, verbose=-1, random_state=59
+            )
+
+            # Get out-of-fold predictions for stacking (prevents leakage)
+            print(f"  STACKED BLEND: Getting OOF predictions...")
+            xgb_oof = cross_val_predict(xgb_oof_model, X_tr, y_tr, cv=3, method='predict_proba')[:, 1]
+            lgb_oof = cross_val_predict(lgb_oof_model, X_tr, y_tr, cv=3, method='predict_proba')[:, 1]
+
+            # Stack OOF predictions as meta-features
+            meta_features_train = np.column_stack([xgb_oof, lgb_oof])
+
+            # Train meta-learner on stacked features
+            meta_learner = LogisticRegression(C=1.0, random_state=73, max_iter=1000)
+            meta_learner.fit(meta_features_train, y_tr, sample_weight=w_tr)
+
+            # Create final base models WITH early stopping for test-time predictions
+            xgb_base = xgb.XGBClassifier(
+                objective='binary:logistic', max_depth=4, learning_rate=0.01,
+                n_estimators=500, subsample=0.7, colsample_bytree=0.7,
+                scale_pos_weight=scale_pos_weight, eval_metric='auc',
+                early_stopping_rounds=30, verbosity=0, random_state=42
+            )
+            lgb_base = lgb.LGBMClassifier(
+                objective='binary', max_depth=5, learning_rate=0.02,
+                n_estimators=500, subsample=0.7, colsample_bytree=0.7,
+                scale_pos_weight=scale_pos_weight, verbose=-1, random_state=59
+            )
+
+            # Train final base models on full training data
+            xgb_base.fit(X_tr, y_tr, sample_weight=w_tr,
+                        eval_set=[(X_val, y_val)], verbose=False)
+            lgb_base.fit(X_tr, y_tr, sample_weight=w_tr,
+                        eval_set=[(X_val, y_val)],
+                        callbacks=[lgb.early_stopping(30, verbose=False)])
+
+            # Store as tuple for special handling
+            models = [('stacked', (xgb_base, lgb_base, meta_learner), None)]
+            print(f"  STACKED BLEND: XGBoost + LightGBM → LogisticRegression meta-learner")
+            print(f"  Meta-learner coefs: XGB={meta_learner.coef_[0][0]:.3f}, LGB={meta_learner.coef_[0][1]:.3f}")
+
+        elif use_regression:
+            # === XGBOOST REGRESSOR (ChatGPT recommended: predict continuous residual returns) ===
+            # This uses ALL the return information instead of discarding into binary buckets
+            base_params = {
+                'objective': 'reg:squarederror',
+                'max_depth': 4,
+                'learning_rate': 0.01,
+                'n_estimators': 500,
+                'subsample': 0.7,
+                'colsample_bytree': 0.7,
+                'min_child_weight': 5,
+                'gamma': 0.2,
+                'reg_alpha': 0.1,
+                'reg_lambda': 1.0,
+                'eval_metric': 'rmse',
+                'early_stopping_rounds': 30,
+                'verbosity': 0
+            }
+
+            for seed_idx in range(n_ensemble):
+                actual_seed = 42 + seed_idx * 17
+                params = base_params.copy()
+                params['random_state'] = actual_seed
+                model = xgb.XGBRegressor(**params)
+                model.fit(X_tr, y_tr, sample_weight=w_tr,
+                         eval_set=[(X_val, y_val)], verbose=False)
+                models.append(model)
+
+            print(f"  REGRESSION: XGBoost Regressor (predicting continuous residual z-scores)")
+
+        else:
+            # === XGBOOST CLASSIFIER (original binary classification) ===
+            n_pos = int(y_train.sum())
+            n_neg = len(y_train) - n_pos
+            scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1
+
+            base_params = {
+                'objective': 'binary:logistic',
+                'max_depth': 4,
+                'learning_rate': 0.01,
+                'n_estimators': 500,
+                'subsample': 0.7,
+                'colsample_bytree': 0.7,
+                'min_child_weight': 5,
+                'gamma': 0.2,
+                'reg_alpha': 0.1,
+                'reg_lambda': 1.0,
+                'scale_pos_weight': scale_pos_weight,
+                'eval_metric': 'auc',
+                'early_stopping_rounds': 30,
+                'verbosity': 0
+            }
+
+            for seed_idx in range(n_ensemble):
+                actual_seed = 42 + seed_idx * 17
+                params = base_params.copy()
+                params['random_state'] = actual_seed
+                model = xgb.XGBClassifier(**params)
+                # Use time-decay sample weights (ChatGPT recommendation)
+                model.fit(X_tr, y_tr, sample_weight=w_tr,
+                         eval_set=[(X_val, y_val)], verbose=False)
+                models.append(model)
 
             # Save per-fold model for audit trail
             if save_fold_models:
@@ -795,11 +1174,45 @@ def walk_forward_validation(
             print(f"  No test samples!")
             continue
 
-        # Ensemble prediction: average probabilities from all models
+        # Ensemble prediction: average from all models
         ensemble_preds = np.zeros(len(X_test))
-        for m in models:
-            ensemble_preds += m.predict_proba(X_test)[:, 1]
-        test_pred_proba = ensemble_preds / len(models)
+        if use_stacked_blend:
+            # Stacked blend: get base model predictions, then apply meta-learner
+            _, (xgb_base, lgb_base, meta_learner), _ = models[0]
+            xgb_preds = xgb_base.predict_proba(X_test)[:, 1]
+            lgb_preds = lgb_base.predict_proba(X_test)[:, 1]
+            meta_features = np.column_stack([xgb_preds, lgb_preds])
+            ensemble_preds = meta_learner.predict_proba(meta_features)[:, 1]
+        elif use_meta_ensemble:
+            # Meta-ensemble: models are tuples (name, model, scaler)
+            for name, model, model_scaler in models:
+                if model_scaler is not None:
+                    # Ridge needs scaled features
+                    X_scaled = model_scaler.transform(X_test)
+                    ensemble_preds += model.predict_proba(X_scaled)[:, 1]
+                else:
+                    # XGB and LGB use raw features
+                    ensemble_preds += model.predict_proba(X_test)[:, 1]
+        elif use_regression:
+            # Regression: average continuous predictions, then rank cross-sectionally
+            for m in models:
+                ensemble_preds += m.predict(X_test)
+            ensemble_preds = ensemble_preds / len(models)
+            # Convert to cross-sectional ranks (0-1) for portfolio construction
+            from scipy.stats import rankdata
+            test_pred_proba = rankdata(ensemble_preds) / len(ensemble_preds)
+        else:
+            for m in models:
+                if use_ranker:
+                    # LightGBM regressor outputs continuous predictions
+                    ensemble_preds += m.predict(X_test)
+                else:
+                    # XGBoost classifier outputs probabilities
+                    ensemble_preds += m.predict_proba(X_test)[:, 1]
+            test_pred_proba = ensemble_preds / len(models)
+
+        # For ranker, predictions are continuous ranks (0-1)
+        # Still compute AUC against binary target for comparison
         test_auc = roc_auc_score(y_test, test_pred_proba)
 
         # Precision@TopN (consistent with actual trading - top_n picks)
@@ -815,17 +1228,25 @@ def walk_forward_validation(
         # === ADDITIONAL VALIDATION METRICS ===
         # Spearman rank correlation (does model rank stocks correctly?)
         # Get actual future returns for test set
+        # Use RESIDUAL returns for IC (model predicts sector-neutral outperformance)
+        return_cols = ['ticker', 'date', 'future_return']
+        if 'future_return_resid' in test_data.columns:
+            return_cols.append('future_return_resid')
+
         test_with_returns = test_clean.merge(
-            test_data[['ticker', 'date', 'future_return']].drop_duplicates(),
+            test_data[return_cols].drop_duplicates(),
             on=['ticker', 'date'],
             how='left'
         )
-        valid_returns = test_with_returns.dropna(subset=['future_return', 'pred_proba'])
+
+        # Use residual returns for IC if available (sector-neutral metric)
+        ic_return_col = 'future_return_resid' if 'future_return_resid' in test_with_returns.columns else 'future_return'
+        valid_returns = test_with_returns.dropna(subset=[ic_return_col, 'pred_proba'])
 
         if len(valid_returns) > 10:
             spearman_corr, spearman_p = spearmanr(
                 valid_returns['pred_proba'],
-                valid_returns['future_return']
+                valid_returns[ic_return_col]
             )
         else:
             spearman_corr, spearman_p = 0, 1
@@ -872,9 +1293,40 @@ def walk_forward_validation(
 
             # Ensemble prediction for backtest (average across all models)
             ensemble_preds = np.zeros(len(X))
-            for m in models:
-                ensemble_preds += m.predict_proba(X)[:, 1]
-            date_features['pred_proba'] = ensemble_preds / len(models)
+            if use_stacked_blend:
+                # Stacked blend: get base model predictions, then apply meta-learner
+                _, (xgb_base, lgb_base, meta_learner), _ = models[0]
+                xgb_preds = xgb_base.predict_proba(X)[:, 1]
+                lgb_preds = lgb_base.predict_proba(X)[:, 1]
+                meta_features = np.column_stack([xgb_preds, lgb_preds])
+                ensemble_preds = meta_learner.predict_proba(meta_features)[:, 1]
+                date_features['pred_proba'] = ensemble_preds
+            elif use_meta_ensemble:
+                # Meta-ensemble: models are tuples (name, model, scaler)
+                for name, model, model_scaler in models:
+                    if model_scaler is not None:
+                        X_scaled = model_scaler.transform(X)
+                        ensemble_preds += model.predict_proba(X_scaled)[:, 1]
+                    else:
+                        ensemble_preds += model.predict_proba(X)[:, 1]
+                date_features['pred_proba'] = ensemble_preds / len(models)
+            elif use_regression:
+                # Regression: average predictions, then rank cross-sectionally
+                for m in models:
+                    ensemble_preds += m.predict(X)
+                ensemble_preds = ensemble_preds / len(models)
+                # Convert to cross-sectional ranks (0-1) for portfolio construction
+                from scipy.stats import rankdata
+                date_features['pred_proba'] = rankdata(ensemble_preds) / len(ensemble_preds)
+            else:
+                for m in models:
+                    if use_ranker:
+                        # LightGBM regressor outputs continuous predictions
+                        ensemble_preds += m.predict(X)
+                    else:
+                        # XGBoost classifier outputs probabilities
+                        ensemble_preds += m.predict_proba(X)[:, 1]
+                date_features['pred_proba'] = ensemble_preds / len(models)
 
             # === PORTFOLIO CONSTRUCTION ===
             if continuous_weights:
@@ -907,6 +1359,78 @@ def walk_forward_validation(
                 # Store weights for return calculation
                 continuous_weight_dict = constrained_weights
 
+            elif use_factor_neutral:
+                # === FACTOR-NEUTRAL OPTIMIZER (ChatGPT institutional-grade Phase 2) ===
+                # Uses factor de-noising: removes market/sector/momentum before optimization
+
+                predictions_df = date_features[['ticker', 'pred_proba']].copy()
+
+                # Filter returns to data before signal date (no lookahead)
+                signal_dt = pd.to_datetime(signal_date)
+                returns_up_to_date = returns_df_for_opt[returns_df_for_opt.index < signal_dt]
+
+                if len(returns_up_to_date) < 120:
+                    # Need more data for factor model
+                    fn_weights = {t: 1.0/top_n for t in date_features.nlargest(top_n, 'pred_proba')['ticker']}
+                else:
+                    spy_up_to_date = spy_returns_for_opt[spy_returns_for_opt.index < signal_dt]
+                    fn_weights = factor_neutral_optimizer.optimize(
+                        predictions_df=predictions_df,
+                        returns_df=returns_up_to_date,
+                        spy_returns=spy_up_to_date,
+                        sectors=sectors_dict_for_opt,
+                        previous_weights=previous_opt_weights,
+                        as_of_date=signal_date
+                    )
+                    previous_opt_weights = fn_weights.copy()
+
+                # Create top_picks DataFrame from optimizer weights
+                fn_tickers = list(fn_weights.keys())
+                top_picks = date_features[date_features['ticker'].isin(fn_tickers)].copy()
+                bottom_picks = None  # Long-only
+
+                # Store weights for return calculation
+                continuous_weight_dict = fn_weights
+
+            elif use_optimizer:
+                # === CVXPY OPTIMIZER (ChatGPT institutional-grade) ===
+                # Use portfolio optimizer with beta/vol/sector constraints
+
+                # Prepare predictions DataFrame for optimizer
+                predictions_df = date_features[['ticker', 'pred_proba']].copy()
+
+                # Get sectors dict
+                sectors_dict = {}
+                if 'sector' in date_features.columns:
+                    sectors_dict = dict(zip(date_features['ticker'], date_features['sector']))
+
+                # Filter returns to data before signal date (no lookahead)
+                signal_dt = pd.to_datetime(signal_date)
+                returns_up_to_date = returns_df_for_opt[returns_df_for_opt.index < signal_dt]
+
+                if len(returns_up_to_date) < 60:
+                    # Fallback to simple top-N if not enough data
+                    opt_weights = {t: 1.0/top_n for t in date_features.nlargest(top_n, 'pred_proba')['ticker']}
+                else:
+                    spy_up_to_date = spy_returns_for_opt[spy_returns_for_opt.index < signal_dt]
+                    opt_weights = portfolio_optimizer.optimize_from_dataframe(
+                        predictions_df=predictions_df,
+                        returns_df=returns_up_to_date,
+                        spy_returns=spy_up_to_date,
+                        sectors_dict=sectors_dict,
+                        previous_weights=previous_opt_weights,
+                        date=signal_date
+                    )
+                    previous_opt_weights = opt_weights.copy()
+
+                # Create top_picks DataFrame from optimizer weights
+                opt_tickers = list(opt_weights.keys())
+                top_picks = date_features[date_features['ticker'].isin(opt_tickers)].copy()
+                bottom_picks = None  # Long-only with optimizer
+
+                # Store weights for return calculation
+                continuous_weight_dict = opt_weights
+
             else:
                 # DISCRETE TOP-N / BOTTOM-N SELECTION (original behavior)
                 top_picks = date_features.nlargest(top_n, 'pred_proba')
@@ -921,6 +1445,10 @@ def walk_forward_validation(
             # === TURNOVER TRACKING ===
             if continuous_weights:
                 current_holdings = set(constrained_weights.keys())
+            elif use_factor_neutral:
+                current_holdings = set(fn_weights.keys())
+            elif use_optimizer:
+                current_holdings = set(opt_weights.keys())
             elif long_short:
                 current_holdings = set(top_picks['ticker']) | set(bottom_picks['ticker'])
             else:
@@ -1602,6 +2130,18 @@ if __name__ == "__main__":
                        help="Neutralize portfolio beta (target beta = 0)")
     parser.add_argument("--neutralize-sector", action="store_true",
                        help="Neutralize sector exposure (equal sector weights)")
+    parser.add_argument("--optimize", action="store_true",
+                       help="Use CVXPY portfolio optimizer with beta/vol/sector constraints (ChatGPT institutional-grade)")
+    parser.add_argument("--factor-neutral", action="store_true",
+                       help="Use factor-neutral optimizer (removes market/sector/momentum risk)")
+    parser.add_argument("--ranker", action="store_true",
+                       help="Use LightGBM ranking model (predicts continuous residual ranks)")
+    parser.add_argument("--meta-ensemble", action="store_true",
+                       help="Use meta-model ensemble (XGB + LightGBM + Ridge) for diverse signal")
+    parser.add_argument("--stacked-blend", action="store_true",
+                       help="Use stacked alpha blending (XGB + LGBM → Ridge meta-learner)")
+    parser.add_argument("--regression", action="store_true",
+                       help="Use XGBoost Regressor on continuous residual returns (ChatGPT recommended)")
     args = parser.parse_args()
 
     fix_survivorship = not args.no_survivorship_fix
@@ -1788,6 +2328,63 @@ if __name__ == "__main__":
                 ret_2022 = r2022['portfolio_return'].values[0] if len(r2022) > 0 else float('nan')
                 print(f"{name:<15} {total_ret:>+13.1%} {ret_2022:>+11.1%}")
 
+    elif args.factor_neutral:
+        # Run with factor-neutral optimizer (ChatGPT institutional-grade Phase 2)
+        print("\n" + "=" * 70)
+        print("ENTERPRISE FACTOR-NEUTRAL MODE: De-noised Portfolio Optimization")
+        print("Features: L2 regularization | Conviction scaling | Regime detection")
+        print("7-Factor Model: Beta + Sector + Momentum + Size + Value + Low-Vol + Reversal")
+        if args.regression:
+            print("ML Model: XGBoost REGRESSOR (continuous residual returns - ChatGPT recommended)")
+        elif args.stacked_blend:
+            print("ML Model: STACKED BLEND (XGB + LGBM → LogisticRegression meta-learner)")
+        elif args.meta_ensemble:
+            print("ML Model: META-ENSEMBLE (XGBoost + LightGBM + Ridge)")
+        elif args.ranker:
+            print("ML Model: LightGBM RANKER (continuous residual rank prediction)")
+        else:
+            print("ML Model: XGBoost Classifier (binary top-10% prediction)")
+        print("Beta: 1.05 ± 0.20 | Vol: 22% ± 10% | Sector max: 30% | No min weight")
+        print("=" * 70)
+        walk_forward_validation(
+            min_train_years=3,
+            top_n=30,
+            transaction_cost=0.001,
+            use_risk_off=False,
+            vol_target=None,
+            use_kelly=False,
+            track_turnover=True,
+            n_ensemble=args.ensemble,
+            fix_survivorship_bias=fix_survivorship,
+            long_short=False,
+            use_optimizer=False,
+            use_factor_neutral=True,  # KEY: Factor-neutral optimization
+            use_ranker=args.ranker,   # KEY: LightGBM ranking model
+            use_meta_ensemble=args.meta_ensemble,  # KEY: XGB + LGBM + Ridge ensemble
+            use_stacked_blend=args.stacked_blend,  # KEY: Stacked alpha blending
+            use_regression=args.regression   # KEY: XGBoost Regressor (ChatGPT recommended)
+        )
+
+    elif args.optimize:
+        # Run with CVXPY portfolio optimizer (ChatGPT institutional-grade)
+        print("\n" + "=" * 70)
+        print("OPTIMIZE MODE: CVXPY Portfolio Optimizer")
+        print("Beta target: 1.0 ± 0.1 | Vol target: 16% | Sector max: 20%")
+        print("=" * 70)
+        walk_forward_validation(
+            min_train_years=3,
+            top_n=30,  # More stocks for optimizer to choose from
+            transaction_cost=0.001,
+            use_risk_off=False,
+            vol_target=None,  # Optimizer handles vol internally
+            use_kelly=False,
+            track_turnover=True,
+            n_ensemble=args.ensemble,
+            fix_survivorship_bias=fix_survivorship,
+            long_short=False,  # Long-only with optimizer
+            use_optimizer=True  # KEY: Use CVXPY optimizer
+        )
+
     else:
         walk_forward_validation(
             min_train_years=3,
@@ -1803,5 +2400,8 @@ if __name__ == "__main__":
             long_short=args.long_short,
             short_cost_bps=args.short_cost,
             neutralize_beta_flag=args.neutralize_beta,
-            neutralize_sector_flag=args.neutralize_sector
+            neutralize_sector_flag=args.neutralize_sector,
+            use_meta_ensemble=args.meta_ensemble,
+            use_stacked_blend=args.stacked_blend,
+            use_regression=args.regression
         )

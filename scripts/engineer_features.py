@@ -31,11 +31,11 @@ def main():
 
     try:
         # Engineer features (from 2015 to present)
-        # Using 3-MONTH target (63 trading days) - much less noisy than 1-month!
-        print("\nEngineering features with 3-MONTH prediction horizon...")
+        # Using 1-MONTH target (21 trading days) - matches monthly rebalancing!
+        print("\nEngineering features with 1-MONTH prediction horizon...")
         features_df = engineer.engineer_all_features(
             start_date="2015-01-01",
-            forward_window=63  # 3 months = ~63 trading days (less noisy!)
+            forward_window=21  # 1 month = ~21 trading days (matches rebalancing!)
         )
 
         print("\n" + "=" * 70)

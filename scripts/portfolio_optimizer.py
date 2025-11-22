@@ -360,6 +360,279 @@ class PortfolioOptimizer:
         )
 
 
+class LongOnlyOptimizer:
+    """
+    Long-only portfolio optimizer with institutional constraints.
+
+    Based on ChatGPT's recommendations:
+    - Beta target: 0.9-1.1 (not neutral)
+    - Vol target: 15-18% annual
+    - Position limits: max 5% per stock
+    - Sector limits: max 20% per sector
+    - Turnover constraint: max 25% per month
+    """
+
+    def __init__(
+        self,
+        max_weight: float = 0.05,           # Max 5% per position
+        min_weight: float = 0.01,           # Min 1% per position (if included)
+        target_beta: float = 1.0,           # Target beta (0.9-1.1 range)
+        beta_tolerance: float = 0.1,        # Beta can be within target ± tolerance
+        target_vol: float = 0.16,           # 16% annual volatility target
+        vol_tolerance: float = 0.02,        # Vol can be within target ± tolerance
+        max_sector_weight: float = 0.20,    # Max 20% per sector
+        max_turnover: float = 0.25,         # Max 25% turnover per month
+        n_stocks: int = 30,                 # Number of stocks to hold
+        verbose: bool = True
+    ):
+        if not CVXPY_AVAILABLE:
+            raise ImportError("cvxpy required. Run: pip install cvxpy")
+
+        self.max_weight = max_weight
+        self.min_weight = min_weight
+        self.target_beta = target_beta
+        self.beta_tolerance = beta_tolerance
+        self.target_vol = target_vol
+        self.vol_tolerance = vol_tolerance
+        self.max_sector_weight = max_sector_weight
+        self.max_turnover = max_turnover
+        self.n_stocks = n_stocks
+        self.verbose = verbose
+
+    def estimate_volatility(self, returns_df: pd.DataFrame, lookback: int = 60) -> pd.Series:
+        """Estimate annualized volatility for each stock."""
+        recent = returns_df.iloc[-lookback:]
+        daily_vol = recent.std()
+        annual_vol = daily_vol * np.sqrt(252)
+        return annual_vol
+
+    def estimate_betas(self, returns_df: pd.DataFrame, spy_returns: pd.Series, lookback: int = 252) -> pd.Series:
+        """Estimate rolling beta to SPY for each stock."""
+        recent_stocks = returns_df.iloc[-lookback:]
+        recent_spy = spy_returns.iloc[-lookback:]
+
+        betas = {}
+        spy_var = recent_spy.var()
+
+        for col in recent_stocks.columns:
+            stock_ret = recent_stocks[col].dropna()
+            aligned_spy = recent_spy.loc[stock_ret.index]
+
+            if len(stock_ret) > 60 and spy_var > 0:
+                cov = np.cov(stock_ret, aligned_spy)[0, 1]
+                beta = cov / spy_var
+                beta = np.clip(beta, 0.2, 3.0)  # Reasonable bounds
+            else:
+                beta = 1.0
+            betas[col] = beta
+
+        return pd.Series(betas)
+
+    def optimize(
+        self,
+        scores: pd.Series,                  # ticker -> ML score
+        volatilities: pd.Series,            # ticker -> annualized vol
+        betas: pd.Series,                   # ticker -> beta
+        sectors: Dict[str, str],            # ticker -> sector
+        cov_matrix: np.ndarray,             # covariance matrix
+        tickers: List[str],                 # ordered tickers matching cov_matrix
+        previous_weights: Optional[Dict[str, float]] = None
+    ) -> Dict[str, float]:
+        """
+        Optimize portfolio with institutional constraints.
+
+        Returns Dict of {ticker: weight} where weights sum to 1.0
+        """
+        n = len(tickers)
+
+        if n < self.n_stocks:
+            if self.verbose:
+                print(f"Warning: Only {n} stocks available, need {self.n_stocks}")
+
+        # Align all data to tickers
+        scores_arr = np.array([scores.get(t, 0) for t in tickers])
+        vol_arr = np.array([volatilities.get(t, 0.3) for t in tickers])
+        beta_arr = np.array([betas.get(t, 1.0) for t in tickers])
+
+        # Normalize scores to alpha
+        alpha = (scores_arr - scores_arr.mean()) / (scores_arr.std() + 1e-8)
+
+        # Decision variable
+        w = cp.Variable(n)
+
+        # === OBJECTIVE: Maximize signal-weighted return - risk ===
+        expected_return = alpha @ w
+        risk = cp.quad_form(w, cov_matrix)
+
+        # Turnover penalty if previous weights exist
+        if previous_weights is not None:
+            w_prev = np.array([previous_weights.get(t, 0.0) for t in tickers])
+            turnover = cp.norm(w - w_prev, 1)
+            objective = cp.Maximize(expected_return - 0.5 * risk - 0.01 * turnover)
+        else:
+            objective = cp.Maximize(expected_return - 0.5 * risk)
+
+        # === CONSTRAINTS ===
+        constraints = []
+
+        # 1. Fully invested (long-only)
+        constraints.append(cp.sum(w) == 1.0)
+
+        # 2. No short selling
+        constraints.append(w >= 0)
+
+        # 3. Max weight per position
+        constraints.append(w <= self.max_weight)
+
+        # 4. Beta constraint: target_beta ± tolerance
+        portfolio_beta = beta_arr @ w
+        constraints.append(portfolio_beta >= self.target_beta - self.beta_tolerance)
+        constraints.append(portfolio_beta <= self.target_beta + self.beta_tolerance)
+
+        # 5. Volatility constraint (approximation using diagonal)
+        # Full: sqrt(w' @ cov @ w) <= target_vol
+        # Approximation: w' @ var <= target_vol^2
+        portfolio_var = cp.quad_form(w, cov_matrix)
+        # Annualize: daily var * 252
+        annual_var_limit = (self.target_vol + self.vol_tolerance) ** 2
+        daily_var_limit = annual_var_limit / 252
+        constraints.append(portfolio_var <= daily_var_limit)
+
+        # 6. Sector constraints
+        if sectors:
+            unique_sectors = list(set(sectors.values()))
+            for sector in unique_sectors:
+                sector_mask = np.array([1.0 if sectors.get(t) == sector else 0.0 for t in tickers])
+                sector_weight = sector_mask @ w
+                constraints.append(sector_weight <= self.max_sector_weight)
+
+        # 7. Turnover constraint
+        if previous_weights is not None:
+            w_prev = np.array([previous_weights.get(t, 0.0) for t in tickers])
+            constraints.append(cp.norm(w - w_prev, 1) <= self.max_turnover * 2)
+
+        # === SOLVE ===
+        problem = cp.Problem(objective, constraints)
+
+        try:
+            problem.solve(solver=cp.OSQP, verbose=False)
+
+            if problem.status not in ['optimal', 'optimal_inaccurate']:
+                if self.verbose:
+                    print(f"OSQP status: {problem.status}, trying SCS...")
+                problem.solve(solver=cp.SCS, verbose=False)
+
+        except Exception as e:
+            if self.verbose:
+                print(f"Optimization error: {e}, using fallback")
+            return self._fallback_weights(scores, tickers)
+
+        # Extract solution
+        if w.value is None:
+            if self.verbose:
+                print("No solution found, using fallback")
+            return self._fallback_weights(scores, tickers)
+
+        weights = w.value
+
+        # Build result dict
+        result = {}
+        for ticker, weight in zip(tickers, weights):
+            if weight >= self.min_weight:
+                result[ticker] = float(weight)
+
+        # Normalize to ensure sum = 1
+        total = sum(result.values())
+        if total > 0:
+            result = {t: w/total for t, w in result.items()}
+
+        if self.verbose:
+            actual_beta = sum(betas.get(t, 1.0) * w for t, w in result.items())
+            actual_vol = np.sqrt(252 * problem.constraints[5].dual_value) if problem.constraints else 0
+            print(f"Optimized: {len(result)} positions")
+            print(f"  Portfolio Beta: {actual_beta:.2f} (target: {self.target_beta:.1f})")
+            print(f"  Top weight: {max(result.values()):.1%}")
+
+        return result
+
+    def _fallback_weights(self, scores: pd.Series, tickers: List[str]) -> Dict[str, float]:
+        """Fallback to score-weighted top-N when optimization fails."""
+        # Get top N by score
+        top_tickers = scores.nlargest(self.n_stocks).index.tolist()
+        top_scores = scores.loc[top_tickers]
+
+        # Score-weighted (normalized)
+        total_score = top_scores.sum()
+        if total_score > 0:
+            weights = {t: s/total_score for t, s in top_scores.items()}
+        else:
+            weights = {t: 1.0/len(top_tickers) for t in top_tickers}
+
+        # Apply max weight constraint
+        weights = {t: min(w, self.max_weight) for t, w in weights.items()}
+
+        # Renormalize
+        total = sum(weights.values())
+        return {t: w/total for t, w in weights.items()}
+
+    def optimize_from_dataframe(
+        self,
+        predictions_df: pd.DataFrame,       # Must have 'ticker', 'pred_proba'
+        returns_df: pd.DataFrame,           # Historical returns (dates x tickers)
+        spy_returns: pd.Series,             # SPY daily returns
+        sectors_dict: Dict[str, str],       # ticker -> sector
+        previous_weights: Optional[Dict[str, float]] = None,
+        date: Optional[str] = None
+    ) -> Dict[str, float]:
+        """
+        High-level interface to optimize from prediction DataFrame.
+        """
+        if self.verbose and date:
+            print(f"\n=== Long-Only Optimization: {date} ===")
+
+        # Get scores
+        scores = predictions_df.set_index('ticker')['pred_proba']
+
+        # Get tickers with both predictions and returns
+        available = [t for t in scores.index if t in returns_df.columns]
+        if len(available) < 20:
+            if self.verbose:
+                print(f"Warning: Only {len(available)} tickers, using fallback")
+            return self._fallback_weights(scores, available)
+
+        scores = scores.loc[available]
+        returns_subset = returns_df[available]
+
+        # Estimate volatilities and betas
+        volatilities = self.estimate_volatility(returns_subset)
+        betas = self.estimate_betas(returns_subset, spy_returns)
+
+        # Estimate covariance (shrinkage)
+        returns_clean = returns_subset.fillna(0).iloc[-252:]
+        sample_cov = returns_clean.cov().values
+        n = sample_cov.shape[0]
+
+        # Ledoit-Wolf shrinkage
+        avg_var = np.trace(sample_cov) / n
+        shrinkage_target = np.eye(n) * avg_var
+        cov_matrix = 0.7 * sample_cov + 0.3 * shrinkage_target
+
+        # Make PSD
+        eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+        eigenvalues = np.maximum(eigenvalues, 1e-8)
+        cov_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+
+        return self.optimize(
+            scores=scores,
+            volatilities=volatilities,
+            betas=betas,
+            sectors=sectors_dict,
+            cov_matrix=cov_matrix,
+            tickers=available,
+            previous_weights=previous_weights
+        )
+
+
 def demo_optimizer():
     """Demo the optimizer with synthetic data."""
     print("=" * 60)
