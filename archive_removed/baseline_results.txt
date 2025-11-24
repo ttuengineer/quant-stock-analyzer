@@ -1,0 +1,284 @@
+======================================================================
+WALK-FORWARD OUT-OF-SAMPLE VALIDATION
+(ENSEMBLE: 5 models with different seeds)
+(WITH SURVIVORSHIP BIAS FIX: Historical S&P 500 membership)
+======================================================================
+
+This is the GOLD STANDARD robustness test.
+Each test period is truly out-of-sample.
+
+Survivorship bias fix: Loaded 179 universe snapshots
+  Date range: 2015-01-27 to 2025-11-21
+  Ticker aliases loaded: 0
+  Stocks removed since 2015: 168
+  Examples: ['RAI', 'PVH', 'HOT', 'PRGO', 'WIN']
+Loading data...
+2025-11-24 11:54:29 - stock_analyzer.database.db_manager - INFO - Database schema initialized
+2025-11-24 11:54:29 - stock_analyzer.database.db_manager - INFO - SQLite database initialized at data\stocks.db
+2025-11-24 11:54:32 - stock_analyzer.database.db_manager - INFO - Database connection closed
+Data range: 2015-12-31 to 2025-09-30
+Using 84 features
+Years available: [np.int32(2015), np.int32(2016), np.int32(2017), np.int32(2018), np.int32(2019), np.int32(2020), np.int32(2021), np.int32(2022), np.int32(2023), np.int32(2024), np.int32(2025)]
+
+Walk-forward schedule:
+  Minimum training: 3 years
+  First test year: 2018
+  Last test year: 2025
+
+============================================================
+FOLD: Train 2015-2017 -> Test 2018
+============================================================
+  Survivorship fix: removed 2492 train / 1017 test samples
+  Training samples: 9192
+  Time-decay: oldest weight=0.77, newest=1.26
+  Class balance: 781 pos (8.5%) / 8411 neg
+  Test AUC: 0.6027
+  Precision@20: 25.00% (actual trading)
+  Precision@10%: 13.65% (random=10%)
+  Spearman Rank Corr: -0.036 (p=0.014)
+  Bottom Decile Hit: 4.48% (should be <10%)
+
+  YEAR 2018 BACKTEST:
+    Portfolio: -14.78%
+    SPY:       -9.46%
+    Excess:    -5.32%
+    Win rate:  36%
+
+============================================================
+FOLD: Train 2015-2018 -> Test 2019
+============================================================
+  Survivorship fix: removed 3509 train / 901 test samples
+  Training samples: 13883
+  Time-decay: oldest weight=0.67, newest=1.40
+  Class balance: 1169 pos (8.4%) / 12714 neg
+  Test AUC: 0.6464
+  Precision@20: 25.00% (actual trading)
+  Precision@10%: 20.50% (random=10%)
+  Spearman Rank Corr: -0.005 (p=0.721)
+  Bottom Decile Hit: 3.52% (should be <10%)
+
+  YEAR 2019 BACKTEST:
+    Portfolio: +27.08%
+    SPY:       +22.57%
+    Excess:    +4.51%
+    Win rate:  64%
+
+============================================================
+FOLD: Train 2015-2019 -> Test 2020
+============================================================
+  Survivorship fix: removed 4410 train / 734 test samples
+  Training samples: 18716
+  Time-decay: oldest weight=0.58, newest=1.54
+  Class balance: 1594 pos (8.5%) / 17122 neg
+  Test AUC: 0.6699
+  Precision@20: 55.00% (actual trading)
+  Precision@10%: 20.71% (random=10%)
+  Spearman Rank Corr: 0.101 (p=0.000)
+  Bottom Decile Hit: 2.37% (should be <10%)
+
+  YEAR 2020 BACKTEST:
+    Portfolio: +11.27%
+    SPY:       +15.91%
+    Excess:    -4.64%
+    Win rate:  64%
+
+============================================================
+FOLD: Train 2015-2020 -> Test 2021
+============================================================
+  Survivorship fix: removed 5144 train / 624 test samples
+  Training samples: 23787
+  Time-decay: oldest weight=0.50, newest=1.69
+  Class balance: 2027 pos (8.5%) / 21760 neg
+  Test AUC: 0.6340
+  Precision@20: 35.00% (actual trading)
+  Precision@10%: 17.97% (random=10%)
+  Spearman Rank Corr: 0.001 (p=0.969)
+  Bottom Decile Hit: 2.87% (should be <10%)
+
+  YEAR 2021 BACKTEST:
+    Portfolio: +45.29%
+    SPY:       +28.67%
+    Excess:    +16.62%
+    Win rate:  45%
+
+============================================================
+FOLD: Train 2015-2021 -> Test 2022
+============================================================
+  Survivorship fix: removed 5768 train / 546 test samples
+  Training samples: 29021
+  Time-decay: oldest weight=0.43, newest=1.85
+  Class balance: 2516 pos (8.7%) / 26505 neg
+  Test AUC: 0.6495
+  Precision@20: 30.00% (actual trading)
+  Precision@10%: 23.05% (random=10%)
+  Spearman Rank Corr: 0.025 (p=0.071)
+  Bottom Decile Hit: 1.67% (should be <10%)
+
+  YEAR 2022 BACKTEST:
+    Portfolio: -24.93%
+    SPY:       -14.56%
+    Excess:    -10.37%
+    Win rate:  18%
+
+============================================================
+FOLD: Train 2015-2022 -> Test 2023
+============================================================
+  Survivorship fix: removed 6314 train / 396 test samples
+  Training samples: 34402
+  Time-decay: oldest weight=0.37, newest=2.01
+  Class balance: 2999 pos (8.7%) / 31403 neg
+  Test AUC: 0.6294
+  Precision@20: 45.00% (actual trading)
+  Precision@10%: 19.28% (random=10%)
+  Spearman Rank Corr: 0.003 (p=0.819)
+  Bottom Decile Hit: 3.60% (should be <10%)
+
+  YEAR 2023 BACKTEST:
+    Portfolio: +18.62%
+    SPY:       +16.80%
+    Excess:    +1.82%
+    Win rate:  45%
+
+============================================================
+FOLD: Train 2015-2023 -> Test 2024
+============================================================
+  Survivorship fix: removed 6710 train / 256 test samples
+  Training samples: 39959
+  Time-decay: oldest weight=0.31, newest=2.17
+  Class balance: 3478 pos (8.7%) / 36481 neg
+  Test AUC: 0.6639
+  Precision@20: 10.00% (actual trading)
+  Precision@10%: 17.34% (random=10%)
+  Spearman Rank Corr: -0.010 (p=0.446)
+  Bottom Decile Hit: 3.15% (should be <10%)
+
+  YEAR 2024 BACKTEST:
+    Portfolio: -2.12%
+    SPY:       +21.04%
+    Excess:    -23.16%
+    Win rate:  27%
+
+============================================================
+FOLD: Train 2015-2024 -> Test 2025
+============================================================
+  Survivorship fix: removed 6966 train / 82 test samples
+  Training samples: 45678
+  Time-decay: oldest weight=0.26, newest=2.34
+  Class balance: 3990 pos (8.7%) / 41688 neg
+  Test AUC: 0.6985
+  Precision@20: 35.00% (actual trading)
+  Precision@10%: 23.98% (random=10%)
+  Spearman Rank Corr: 0.102 (p=0.000)
+  Bottom Decile Hit: 2.49% (should be <10%)
+
+  YEAR 2025 BACKTEST:
+    Portfolio: +20.29%
+    SPY:       +12.80%
+    Excess:    +7.49%
+    Win rate:  75%
+
+======================================================================
+WALK-FORWARD VALIDATION SUMMARY
+======================================================================
+
+=== YEARLY OUT-OF-SAMPLE PERFORMANCE ===
+
+Year      Portfolio        SPY     Excess     Win%      AUC     P@10   Sprmn   Bot10
+-------------------------------------------------------------------------------------
+2018        -14.8%     -9.5%     -5.3%     36%   0.603   13.6%  -0.04   4.5%
+2019        +27.1%    +22.6%     +4.5%     64%   0.646   20.5%  -0.01   3.5%
+2020        +11.3%    +15.9%     -4.6%     64%   0.670   20.7%   0.10   2.4%
+2021        +45.3%    +28.7%    +16.6%     45%   0.634   18.0%   0.00   2.9%
+2022        -24.9%    -14.6%    -10.4%     18%   0.649   23.0%   0.02   1.7%
+2023        +18.6%    +16.8%     +1.8%     45%   0.629   19.3%   0.00   3.6%
+2024         -2.1%    +21.0%    -23.2%     27%   0.664   17.3%  -0.01   3.2%
+2025        +20.3%    +12.8%     +7.5%     75%   0.698   24.0%   0.10   2.5%
+-------------------------------------------------------------------------------------
+TOTAL       +83.6%   +125.5%    -41.9%
+AVG         +10.1%    +11.7%     -1.6%     47%   0.649   19.6%   0.02   3.0%
+
+======================================================================
+RISK ANALYTICS (Monthly Returns)
+======================================================================
+
+Metric                       Portfolio          SPY
+--------------------------------------------------
+Annualized Return               +9.0%      +12.2%
+Annualized Volatility           36.0%       17.7%
+Sharpe Ratio                     0.11        0.40
+Sortino Ratio                    0.16           --
+Max Drawdown                   -49.9%      -23.6%
+Calmar Ratio                     0.18           --
+Beta to SPY                      1.77         1.00
+Alpha (annualized)              -8.8%           --
+Information Ratio               -0.14           --
+Tracking Error                  22.6%           --
+
+            --- TURNOVER ANALYTICS ---            
+Avg Monthly Turnover            40.4%
+Implied Annual Turnover          485%
+Avg Positions Exited/Mo           8.1
+Avg Positions Entered/Mo          8.1
+Est. Annual Slippage Cost       0.24%
+
+--------------------------------------------------
+RISK ASSESSMENT:
+  Sharpe 0.11 - WEAK risk-adjusted returns
+  Max DD -49.9% - HIGH RISK (may be hard to stomach)
+  Beta 1.77 - HIGH market exposure (amplifies moves)
+  Info Ratio -0.14 - NO consistent alpha
+
+======================================================================
+KEY INSIGHTS
+======================================================================
+
+1. CONSISTENCY: Beat SPY in 4/8 years (50%)
+
+2. BEST YEAR:  2021 with +16.6% excess
+   WORST YEAR: 2024 with -23.2% excess
+
+3. BEAR MARKET PERFORMANCE (SPY negative years):
+   2018: Portfolio -14.8% vs SPY -9.5% (excess: -5.3%)
+   2022: Portfolio -24.9% vs SPY -14.6% (excess: -10.4%)
+
+4. MODEL QUALITY:
+   Avg AUC: 0.649 (>0.55 is good, >0.60 is strong)
+   Avg Precision@10: 19.6% (>15% is good, >20% is excellent)
+   Avg Spearman Corr: 0.023 (>0.05 is meaningful)
+   Avg Bottom Decile: 3.0% (should be <10% if model works)
+   Model shows SOME ranking ability
+
+======================================================================
+VERDICT
+======================================================================
+
+~ MARGINAL: Strategy shows some signal but inconsistent
+  - May be loading on known factors
+  - Consider factor analysis before live trading
+
+======================================================================
+STATISTICAL SIGNIFICANCE (Bootstrap)
+======================================================================
+
+Monthly Excess Returns (vs SPY):
+  Mean:           +0.19%
+  95% CI:         [-1.14%, +1.63%]
+  p-value:        0.3921 (H0: mean <= 0)
+Traceback (most recent call last):
+  File "C:\Users\derekg\OneDrive - Betenbough Homes\Desktop\Personal Github\quant-stock-analyzer\scripts\walk_forward_validation.py", line 2389, in <module>
+    walk_forward_validation(
+    ~~~~~~~~~~~~~~~~~~~~~~~^
+        min_train_years=3,
+        ^^^^^^^^^^^^^^^^^^
+    ...<15 lines>...
+        use_regression=args.regression
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\derekg\OneDrive - Betenbough Homes\Desktop\Personal Github\quant-stock-analyzer\scripts\walk_forward_validation.py", line 2029, in walk_forward_validation
+    print(f"\n  \u2717 NOT significant (p={p_value:.4f})")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\derekg\AppData\Local\Programs\Python\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2717' in position 4: character maps to <undefined>

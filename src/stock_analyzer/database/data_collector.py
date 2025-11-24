@@ -63,7 +63,7 @@ class DataCollector:
                 if response.status_code == 200:
                     data = response.json()
                     tickers = [item['symbol'] for item in data]
-                    logger.info(f"✓ SUCCESS: Got {len(tickers)} tickers from FMP API")
+                    logger.info(f"[OK] SUCCESS: Got {len(tickers)} tickers from FMP API")
                     return tickers
                 else:
                     logger.warning(f"FMP API returned status {response.status_code}")
@@ -111,7 +111,7 @@ class DataCollector:
             if len(tickers) < 400:  # Sanity check
                 raise ValueError(f"Only found {len(tickers)} tickers, expected ~500")
 
-            logger.info(f"✓ SUCCESS: Got {len(tickers)} tickers from Wikipedia")
+            logger.info(f"[OK] SUCCESS: Got {len(tickers)} tickers from Wikipedia")
             return tickers
 
         except Exception as e:

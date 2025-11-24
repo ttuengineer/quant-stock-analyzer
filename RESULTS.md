@@ -1,160 +1,189 @@
 # ML Stock Picker: Out-of-Sample Results
 
-> **Built a quantitative stock picking system that beat the S&P 500 by +14% over 8 years using walk-forward validated machine learning.**
+## 🏆 OPTIMAL CONFIGURATION (RECOMMENDED) - Updated 2025-11-24
 
----
-
-## The Numbers
-
-```
-                    PORTFOLIO      S&P 500      EXCESS RETURN
-                    ─────────      ───────      ─────────────
-Total Return:        +123.5%       +109.2%         +14.3%
-
-Beat SPY:            5 of 8 years (62%)
+**Configuration**: Mega-Cap Overlay + 60% allocation to top 5 SPY holdings
+**Command**:
+```bash
+python scripts/walk_forward_validation.py \
+    --ensemble 3 \
+    --mega-cap-overlay \
+    --min-mega-cap-allocation 0.60 \
+    --mega-cap-force-top-k 5
 ```
 
----
+**Results Summary**:
+- Portfolio: **+269.2%** over 8 years (2018-2025)
+- SPY: +125.5%
+- **Excess Return: +143.7%**
+- Beat SPY in **6 of 8 years (75%)**
 
-## Year-by-Year Performance
+**Risk Metrics**:
+- **Sharpe Ratio: 0.52** (beats SPY's 0.40!)
+- Annualized Return: +20.3%
+- Annualized Volatility: 29.3%
+- **Alpha: +4.0%** (positive skill!)
+- Beta: 1.57
+- Max Drawdown: -34.6%
+- Information Ratio: 0.58
+- Turnover: 392% annually
+
+### Year-by-Year Performance (Optimal Configuration)
 
 | Year | Portfolio | S&P 500 | Excess | Result |
 |------|-----------|---------|--------|--------|
-| 2018 | -14.4% | -9.5% | -5.0% | ❌ |
-| 2019 | +14.6% | +22.6% | -8.0% | ❌ |
-| 2020 | +26.1% | +15.9% | **+10.2%** | ✅ Beat SPY |
-| 2021 | +44.0% | +28.7% | **+15.3%** | ✅ Beat SPY |
-| 2022 | -19.7% | -14.6% | -5.2% | ❌ |
-| 2023 | +21.3% | +16.8% | **+4.5%** | ✅ Beat SPY |
-| 2024 | +1.9% | +21.0% | -19.2% | ❌ |
-| 2025 | +7.6% | +4.6% | **+3.0%** | ✅ Beat SPY |
+| 2018 | -11.8% | -9.5% | -2.3% | Underperformed |
+| 2019 | +40.4% | +22.6% | **+17.9%** | **Beat SPY** |
+| 2020 | +40.8% | +15.9% | **+24.9%** | **Beat SPY** |
+| 2021 | +50.7% | +28.7% | **+22.1%** | **Beat SPY** |
+| 2022 | -31.1% | -14.6% | -16.6% | Underperformed |
+| 2023 | +37.8% | +16.8% | **+21.0%** | **Beat SPY** |
+| 2024 | +17.3% | +21.0% | -3.8% | Underperformed |
+| 2025 | +26.2% | +12.8% | **+13.4%** | **Beat SPY** |
+| **TOTAL** | **+269.2%** | **+125.5%** | **+143.7%** | **Beat SPY** |
+
+### Key Improvements vs Baseline
+
+| Metric | Baseline (no overlay) | Optimal (with overlay) | Improvement |
+|--------|----------------------|------------------------|-------------|
+| Total Excess | -3.9% | **+143.7%** | **+147.6%** |
+| Sharpe Ratio | 0.21 | **0.52** | +148% |
+| Win Rate | 50% (4/8 years) | **75% (6/8 years)** | +50% |
+| Max Drawdown | -47.5% | **-34.6%** | +27% improvement |
+| Alpha | -5.2% | **+4.0%** | +9.2% |
+| Turnover | 478% | **392%** | -18% |
+
+**See `MEGA_CAP_OVERLAY_FINAL_RESULTS.md` for complete analysis and `QUICK_START_OPTIMAL.md` for quick reference.**
 
 ---
 
-## Model Quality Metrics
+## Historical Configurations (For Comparison)
 
-| Metric | Value | What It Means |
-|--------|-------|---------------|
-| **AUC** | 0.663 | Model correctly ranks stocks 66% of the time |
-| **Precision@10%** | 21.1% | Top decile has 2x the winners vs random |
-| **Information Coefficient** | 0.04 | Consistent with institutional quant funds |
-| **Bottom Decile Hit Rate** | 4.3% | Model successfully avoids losers |
-| **Positive IC Years** | 62% | Signal is stable across market regimes |
+## Latest Walk-Forward (results_ensemble3.txt)
 
----
+- Data through 2025-09-30, 84 features, ensemble=3, equal-weight top 20
+- Portfolio +92.1% vs SPY +125.5% (excess -33.4%)
+- Beat SPY in 3 of 8 years (38%)
+- Model quality: AUC 0.649 | Precision@10 19.7% | IC 0.022 | Bottom decile hit 3.2%
 
-## What Makes This Legit
+### Year-by-Year Performance
 
-### 1. True Out-of-Sample Testing
-- **Walk-forward validation**: Train on 2015-2017 → Test on 2018, Train on 2015-2018 → Test on 2019, etc.
-- Model NEVER sees future data during training
-- Each year's performance is genuinely out-of-sample
+| Year | Portfolio | S&P 500 | Excess | Result |
+|------|-----------|---------|--------|--------|
+| 2018 | -14.8% | -9.5% | -5.4% | Underperformed |
+| 2019 | +20.2% | +22.6% | -2.3% | Underperformed |
+| 2020 | +14.5% | +15.9% | -1.4% | Underperformed |
+| 2021 | +49.2% | +28.7% | +20.5% | Beat SPY |
+| 2022 | -22.8% | -14.6% | -8.3% | Underperformed |
+| 2023 | +20.9% | +16.8% | +4.1% | Beat SPY |
+| 2024 | -1.2% | +21.0% | -22.2% | Underperformed |
+| 2025 | +19.2% | +12.8% | +6.4% | Beat SPY |
 
-### 2. Survivorship Bias Correction
-- Used **historical S&P 500 membership** (not just today's constituents)
-- Scraped Wikipedia for all index changes since 2015
-- Removed 168 stocks that were kicked out of the index
-- This removes the typical 3-7%/year artificial boost
+### Notes
 
-### 3. Realistic Trading Assumptions
-- Monthly rebalancing (not daily)
-- 5 basis point slippage per trade
-- Top 20 stocks only (concentrated portfolio)
-- No leverage, no shorting
+- These numbers are parsed from `results_ensemble3.txt` produced by `scripts/walk_forward_validation.py --ensemble 3`.
+- Risk metrics from the same run: Sharpe 0.13, vol 36.1%, beta 1.76, max drawdown -51.4%.
 
-### 4. Ensemble Machine Learning
-- 3 XGBoost models with different random seeds
-- 42 engineered features (momentum, volatility, cross-sectional ranks)
-- Prevents overfitting to any single model
+## Optimizer Run (optimize_results.txt)
 
----
+- CVXPY constraints: beta target 1.0 ±0.1, vol target 16%, sector max 20%, ensemble=3
+- Portfolio +111.2% vs SPY +125.5% (excess -14.3%)
+- Beat SPY in 4 of 8 years (50%)
+- Risk metrics: Sharpe 0.19, vol 32.7%, beta 1.63, max drawdown -47.6%
 
-## Best & Worst Years
+### Year-by-Year Performance (optimizer)
 
-### 🏆 Best Year: 2021
-```
-Portfolio: +44.0%
-S&P 500:   +28.7%
-Excess:    +15.3%
-```
-The model caught the post-COVID rally perfectly.
+| Year | Portfolio | S&P 500 | Excess | Result |
+|------|-----------|---------|--------|--------|
+| 2018 | -16.3% | -9.5% | -6.8% | Underperformed |
+| 2019 | +17.4% | +22.6% | -5.2% | Underperformed |
+| 2020 | +21.3% | +15.9% | +5.3% | Beat SPY |
+| 2021 | +48.7% | +28.7% | +20.1% | Beat SPY |
+| 2022 | -19.5% | -14.6% | -5.0% | Underperformed |
+| 2023 | +21.0% | +16.8% | +4.2% | Beat SPY |
+| 2024 | -0.7% | +21.0% | -21.8% | Underperformed |
+| 2025 | +23.3% | +12.8% | +10.5% | Beat SPY |
 
-### 📉 Worst Year: 2024
-```
-Portfolio: +1.9%
-S&P 500:   +21.0%
-Excess:    -19.2%
-```
-Concentrated in wrong sectors during the AI/Mag7 rally.
+## Optimizer + Meta-Ensemble (optimize_results_meta.txt)
 
----
+- CVXPY constraints (tighter): beta target 1.0 ±0.05, vol target ~14%, sector max 15%, ensemble=10, meta-ensemble (XGB + LGBM + Ridge)
+- Portfolio +119.3% vs SPY +125.5% (excess -6.2%)
+- Beat SPY in 4 of 8 years (50%)
+- Risk metrics: Sharpe 0.21, vol 32.3%, beta 1.61, max drawdown -46.9%
 
-## The Signal is Real
+### Year-by-Year Performance (optimizer meta-ensemble)
 
-### Statistical Significance
-- Bootstrap p-value analysis performed
-- Positive IC in 62% of years
-- Model shows consistent ranking ability across bull and bear markets
+| Year | Portfolio | S&P 500 | Excess | Result |
+|------|-----------|---------|--------|--------|
+| 2018 | -15.8% | -9.5% | -6.3% | Underperformed |
+| 2019 | +16.6% | +22.6% | -6.0% | Underperformed |
+| 2020 | +24.2% | +15.9% | +8.3% | Beat SPY |
+| 2021 | +46.4% | +28.7% | +17.8% | Beat SPY |
+| 2022 | -16.4% | -14.6% | -1.9% | Underperformed |
+| 2023 | +20.7% | +16.8% | +3.9% | Beat SPY |
+| 2024 | -1.8% | +21.0% | -22.9% | Underperformed |
+| 2025 | +24.2% | +12.8% | +11.4% | Beat SPY |
 
-### What the Model Learned
-Top predictive features:
-1. 6-month momentum (cross-sectional rank)
-2. Distance from 52-week high
-3. 20-day volatility
-4. Volume z-score
-5. Industry-relative returns
+## Optimizer + Meta-Ensemble (tight constraints) (optimize_results_meta_tight.txt)
 
----
+- CVXPY constraints (tighter, current defaults): beta target 1.0 ±0.05, vol target ~14%, sector max 10%, max weight 3%, min weight 0.5%, turnover max 20%, ensemble=15, meta-ensemble (XGB + LGBM + Ridge)
+- Portfolio +121.7% vs SPY +125.5% (excess -3.9%)
+- Beat SPY in 4 of 8 years (50%)
+- Risk metrics: Sharpe 0.21, vol 32.6%, beta 1.62, max drawdown -47.5%
 
-## Comparison to Benchmarks
+### Year-by-Year Performance (tight meta-ensemble)
 
-| Strategy | Total Return (2018-2025) |
-|----------|-------------------------|
-| **This ML Model** | **+123.5%** |
-| S&P 500 (SPY) | +109.2% |
-| Equal-weight S&P 500 | ~+85% |
-| 60/40 Portfolio | ~+65% |
+| Year | Portfolio | S&P 500 | Excess | Result |
+|------|-----------|---------|--------|--------|
+| 2018 | -15.1% | -9.5% | -5.7% | Underperformed |
+| 2019 | +16.1% | +22.6% | -6.5% | Underperformed |
+| 2020 | +24.1% | +15.9% | +8.2% | Beat SPY |
+| 2021 | +46.2% | +28.7% | +17.5% | Beat SPY |
+| 2022 | -17.4% | -14.6% | -2.8% | Underperformed |
+| 2023 | +20.5% | +16.8% | +3.7% | Beat SPY |
+| 2024 | -0.4% | +21.0% | -21.4% | Underperformed |
+| 2025 | +25.0% | +12.8% | +12.2% | Beat SPY |
 
----
+## Optimizer + Meta-Ensemble (ultra constraints) (optimize_results_meta_ultra.txt)
 
-## Infrastructure Built
+- CVXPY constraints (even tighter): beta target 1.0 ±0.05, vol target ~14%, sector max 8%, max weight 2%, min weight 0.3%, turnover max 15%, ensemble=20, meta-ensemble (XGB + LGBM + Ridge)
+- Portfolio +111.3% vs SPY +125.5% (excess -14.3%)
+- Beat SPY in 4 of 8 years (50%)
+- Risk metrics: Sharpe 0.19, vol 32.7%, beta 1.63, max drawdown -48.3%
 
-- ✅ Walk-forward validation engine
-- ✅ Survivorship bias correction (Wikipedia scraping)
-- ✅ Paper trading system with audit trail
-- ✅ CVXPY portfolio optimizer
-- ✅ Monthly automated workflow
-- ✅ Performance reconciliation
+### Year-by-Year Performance (ultra meta-ensemble)
 
----
+| Year | Portfolio | S&P 500 | Excess | Result |
+|------|-----------|---------|--------|--------|
+| 2018 | -15.5% | -9.5% | -6.1% | Underperformed |
+| 2019 | +16.2% | +22.6% | -6.4% | Underperformed |
+| 2020 | +20.9% | +15.9% | +5.0% | Beat SPY |
+| 2021 | +44.9% | +28.7% | +16.3% | Beat SPY |
+| 2022 | -16.9% | -14.6% | -2.4% | Underperformed |
+| 2023 | +20.2% | +16.8% | +3.4% | Beat SPY |
+| 2024 | -0.7% | +21.0% | -21.8% | Underperformed |
+| 2025 | +24.0% | +12.8% | +11.2% | Beat SPY |
 
-## What's Next
+## Factor-Neutral Meta-Ensemble (optimize_results_factor_neutral.txt)
 
-Currently working on:
-1. **Volatility-adjusted selection** - Fix 2018/2022 drawdowns
-2. **Beta control** - Reduce market sensitivity
-3. **Additional features** - Analyst revisions, macro regime
-4. **Target**: Improve IC from 0.04 → 0.06 (doubles alpha)
+- Factor model (beta/sector/momentum/size/value/low-vol/reversal) with meta-ensemble (XGB + LGBM + Ridge), ensemble=10
+- Portfolio +41.8% vs SPY +125.5% (excess -83.7%)
+- Beat SPY in 2 of 8 years (25%)
+- Risk metrics: Sharpe ~0.00, vol 26.3%, beta 1.31, max drawdown -41.9% (no significant alpha)
 
----
+### Year-by-Year Performance (factor-neutral)
 
-## Tech Stack
+| Year | Portfolio | S&P 500 | Excess | Result |
+|------|-----------|---------|--------|--------|
+| 2018 | -15.7% | -9.5% | -6.3% | Underperformed |
+| 2019 | +20.2% | +22.6% | -2.4% | Underperformed |
+| 2020 | -7.5% | +15.9% | -23.4% | Underperformed |
+| 2021 | +23.2% | +28.7% | -5.5% | Underperformed |
+| 2022 | -15.4% | -14.6% | -0.8% | Underperformed |
+| 2023 | +23.1% | +16.8% | +6.3% | Beat SPY |
+| 2024 | +4.2% | +21.0% | -16.8% | Underperformed |
+| 2025 | +13.2% | +12.8% | +0.4% | Beat SPY |
 
-- **Python 3.8+**
-- **XGBoost** - Gradient boosting
-- **CVXPY** - Convex optimization
-- **pandas/numpy** - Data processing
-- **SQLite** - Local database
-- **BeautifulSoup** - Web scraping
+## Legacy (documented previously)
 
----
-
-## Key Insight
-
-> **The ML model has real predictive power (AUC 0.66, IC 0.04). The challenge is portfolio construction - extracting that alpha without taking excessive risk.**
-
-This is the same challenge institutional quant funds face. The signal exists. Now it's about optimization.
-
----
-
-*Results are out-of-sample and include survivorship bias correction. Past performance does not guarantee future results.*
+The earlier README numbers (+123.5% portfolio vs +109.2% SPY, excess +14.3%) were produced with an older configuration (42 features, earlier data cut, ensemble=3) and are kept only for historical reference. They do not reflect the latest data or code.

@@ -154,7 +154,7 @@ class ModelTrainer:
                     if features is None or features.empty:
                         continue
 
-                    # Calculate forward return (21 trading days ≈ 1 month)
+                    # Calculate forward return (21 trading days ~= 1 month)
                     current_price = window['Close'].iloc[-1]
                     future_price = price_data['Close'].iloc[i + 21]
                     forward_return = (future_price / current_price - 1)
@@ -233,7 +233,7 @@ class ModelTrainer:
 
         self.predictor.save_models(str(self.output_dir))
 
-        logger.info("✓ Models saved successfully!")
+        logger.info("[OK] Models saved successfully!")
 
     async def run_training_pipeline(self, years: int = 3):
         """
@@ -269,7 +269,7 @@ class ModelTrainer:
         self.save_models()
 
         print("\n" + "="*70)
-        print("✓ TRAINING COMPLETE!")
+        print("[OK] TRAINING COMPLETE!")
         print("="*70)
         print("\nYour models are ready to use!")
         print("Restart your Streamlit app to use the trained ML strategy.")
@@ -289,7 +289,7 @@ async def main():
         sys.exit(0)
     except Exception as e:
         logger.error(f"Training failed: {e}", exc_info=True)
-        print(f"\n❌ Training failed: {e}")
+        print(f"\n[FAIL] Training failed: {e}")
         print("Check the logs for details.")
         sys.exit(1)
 

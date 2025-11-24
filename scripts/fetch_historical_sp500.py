@@ -196,7 +196,7 @@ def build_ticker_aliases(changes_df):
     """
     Build ticker alias map from changes data.
 
-    When a stock changes ticker (e.g., FB → META), the changes table
+    When a stock changes ticker (e.g., FB -> META), the changes table
     shows them on the same row. We capture these relationships.
     """
     aliases = {}

@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     finnhub_api_key: Optional[SecretStr] = None
     rapidapi_key: Optional[SecretStr] = None  # RapidAPI Yahoo Finance
     rapidapi_host: Optional[str] = "yahoo-finance15.p.rapidapi.com"  # RapidAPI host
+    fmp_api_key: Optional[SecretStr] = None  # Financial Modeling Prep API
 
     # Database Configuration
     database_url: Optional[SecretStr] = None
@@ -99,7 +100,7 @@ class Settings(BaseSettings):
     stock_exchanges: List[str] = ["NASDAQ", "NYSE", "AMEX"]
     exclude_sectors: List[str] = []  # e.g., ["Utilities", "Real Estate"]
 
-    @field_validator("alpha_vantage_api_key", "polygon_api_key", "finnhub_api_key", "rapidapi_key", mode="before")
+    @field_validator("alpha_vantage_api_key", "polygon_api_key", "finnhub_api_key", "rapidapi_key", "fmp_api_key", mode="before")
     @classmethod
     def validate_api_keys(cls, v, info):
         """Warn if API keys are missing in production."""

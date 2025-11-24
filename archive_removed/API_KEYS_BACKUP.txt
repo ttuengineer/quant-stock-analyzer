@@ -1,0 +1,74 @@
+==============================================================================
+                    STOCK ANALYZER - API KEYS BACKUP
+==============================================================================
+Created: November 18, 2024
+Purpose: Backup of all API keys for Stock Analyzer Pro project
+
+IMPORTANT: Keep this file secure and do not share publicly!
+
+==============================================================================
+
+1. ALPHA VANTAGE
+   -------------
+   Website: https://www.alphavantage.co/
+   API Key: WY0Y856G7K6FLIGR
+   Purpose: Stock quotes, fundamentals, technical indicators
+   Rate Limit: 5 calls/minute, 500 calls/day (free tier)
+
+
+2. FINNHUB
+   --------
+   Website: https://finnhub.io/
+   API Key: d4ekimhr01qrumpftjtgd4ekimhr01qrumpftju0
+   Purpose: Real-time stock data, news, fundamentals
+   Rate Limit: 60 calls/minute (free tier)
+
+
+3. RAPIDAPI (Yahoo Finance 15)
+   ---------------------------
+   Website: https://rapidapi.com/sparior/api/yahoo-finance15
+   API Key: 3fef3d63c0msh130bc5004223cabp1181a6jsn96e6b43de117
+   Host: yahoo-finance15.p.rapidapi.com
+   Purpose: PRIMARY Yahoo Finance API (Yahoo deprecated free API)
+   Rate Limit: Varies by plan (check RapidAPI dashboard)
+
+   Endpoints Used:
+   - /api/v1/markets/quote?ticker={TICKER}&type=STOCKS - Real-time quotes
+   - /api/v1/markets/search?search={QUERY} - Search stocks
+   - /api/v2/markets/tickers?page={PAGE}&type=STOCKS - Get ticker lists
+
+   NOTE: System uses RapidAPI as PRIMARY data source for all Yahoo
+   Finance data. Falls back to free yfinance library if RapidAPI fails.
+
+
+4. POLYGON.IO (Optional - Not Yet Configured)
+   -------------------------------------------
+   Website: https://polygon.io/
+   API Key: [Add when available]
+   Purpose: Real-time and historical market data
+   Rate Limit: Varies by plan
+
+==============================================================================
+
+USAGE NOTES:
+-----------
+- All API keys are automatically loaded from the .env file
+- The multi-provider system will use Yahoo Finance as primary (no key needed)
+- Alpha Vantage, Finnhub, and Massive.com serve as fallback providers
+- No code changes needed - keys are auto-detected by the provider manager
+
+SECURITY:
+--------
+- This file is listed in .gitignore to prevent accidental commits
+- Never share these keys publicly or commit them to version control
+- Regenerate keys immediately if they are compromised
+- Each provider has a dashboard to monitor usage and regenerate keys
+
+PROVIDER DASHBOARD LINKS:
+------------------------
+- Alpha Vantage: https://www.alphavantage.co/support/#api-key
+- Finnhub: https://finnhub.io/dashboard
+- Massive.com: https://massive.com/dashboard
+- Polygon.io: https://polygon.io/dashboard/api-keys
+
+==============================================================================
