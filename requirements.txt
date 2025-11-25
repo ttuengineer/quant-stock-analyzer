@@ -52,6 +52,9 @@ xgboost>=2.1.0
 lightgbm>=4.5.0
 catboost>=1.2.5
 joblib>=1.4.0
+optuna>=3.6.0  # Hyperparameter optimization
+shap>=0.44.0   # Feature importance and interpretability
+statsmodels>=0.14.0  # Advanced statistical tests
 
 # Portfolio Optimization (ChatGPT recommended)
 cvxpy>=1.4.0

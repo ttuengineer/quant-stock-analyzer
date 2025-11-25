@@ -202,7 +202,9 @@ class StockPredictor:
         test_size: float = 0.2,
         validation_split: float = 0.2,
         n_splits: int = 5,
-        random_state: int = 42
+        random_state: int = 42,
+        optimize_hyperparameters: bool = False,
+        optuna_trials: int = 50
     ) -> Dict:
         """
         Train ensemble models using walk-forward validation.
@@ -221,6 +223,8 @@ class StockPredictor:
             validation_split: Fraction of data for validation
             n_splits: Number of time series cross-validation splits
             random_state: Random seed for reproducibility
+            optimize_hyperparameters: If True, use Optuna to find optimal hyperparameters
+            optuna_trials: Number of optimization trials per model (default: 50)
 
         Returns:
             Training metrics and performance stats
@@ -261,9 +265,30 @@ class StockPredictor:
             y_return_train = y_return.iloc[:-test_size_actual] if hasattr(y_return, 'iloc') else y_return[:-test_size_actual]
             y_return_test = y_return.iloc[-test_size_actual:] if hasattr(y_return, 'iloc') else y_return[-test_size_actual:]
 
+            # Hyperparameter optimization (if enabled)
+            optimized_params = None
+            if optimize_hyperparameters:
+                logger.info("Running hyperparameter optimization...")
+                from .hyperparameter_optimizer import HyperparameterOptimizer
+
+                optimizer = HyperparameterOptimizer(
+                    n_trials=optuna_trials,
+                    cv_splits=3,
+                    random_state=random_state,
+                    verbose=True
+                )
+
+                optimized_params = optimizer.optimize_all(
+                    X_train,
+                    y_direction_train if isinstance(y_direction_train, np.ndarray) else y_direction_train.values,
+                    y_return_train if isinstance(y_return_train, np.ndarray) else y_return_train.values
+                )
+
+                logger.info("Hyperparameter optimization complete!")
+
             # Train on training set
-            self._train_classifiers(X_train, y_direction_train)
-            self._train_regressors(X_train, y_return_train)
+            self._train_classifiers(X_train, y_direction_train, optimized_params)
+            self._train_regressors(X_train, y_return_train, optimized_params)
 
             # Evaluate on test set
             direction_probs = self._predict_direction_ensemble(X_test)
@@ -285,8 +310,8 @@ class StockPredictor:
             return_r2 = r2_score(y_return_test, return_preds)
 
             # Retrain on full dataset for production use
-            self._train_classifiers(X_scaled, y_direction if isinstance(y_direction, np.ndarray) else y_direction.values)
-            self._train_regressors(X_scaled, y_return if isinstance(y_return, np.ndarray) else y_return.values)
+            self._train_classifiers(X_scaled, y_direction if isinstance(y_direction, np.ndarray) else y_direction.values, optimized_params)
+            self._train_regressors(X_scaled, y_return if isinstance(y_return, np.ndarray) else y_return.values, optimized_params)
 
             # Calculate feature importance
             self._calculate_feature_importance()
@@ -322,85 +347,91 @@ class StockPredictor:
             logger.error(f"Error training models: {e}")
             return {}
 
-    def _train_classifiers(self, X: np.ndarray, y: np.ndarray):
+    def _train_classifiers(self, X: np.ndarray, y: np.ndarray, optimized_params: Dict = None):
         """Train classification models (direction prediction)."""
         # XGBoost Classifier
-        self.xgb_clf = xgb.XGBClassifier(
-            n_estimators=100,
-            max_depth=5,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective='binary:logistic',
-            eval_metric='logloss',
-            random_state=42,
-            n_jobs=-1
-        )
+        xgb_params = optimized_params['xgboost_clf'] if optimized_params else {
+            'n_estimators': 100,
+            'max_depth': 5,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'objective': 'binary:logistic',
+            'eval_metric': 'logloss',
+            'random_state': 42,
+            'n_jobs': -1
+        }
+        self.xgb_clf = xgb.XGBClassifier(**xgb_params)
         self.xgb_clf.fit(X, y)
 
         # LightGBM Classifier
-        self.lgb_clf = lgb.LGBMClassifier(
-            n_estimators=100,
-            max_depth=5,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective='binary',
-            random_state=42,
-            n_jobs=-1,
-            verbose=-1
-        )
+        lgb_params = optimized_params['lightgbm_clf'] if optimized_params else {
+            'n_estimators': 100,
+            'max_depth': 5,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'objective': 'binary',
+            'random_state': 42,
+            'n_jobs': -1,
+            'verbose': -1
+        }
+        self.lgb_clf = lgb.LGBMClassifier(**lgb_params)
         self.lgb_clf.fit(X, y)
 
         # Random Forest Classifier
-        self.rf_clf = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=10,
-            min_samples_split=10,
-            min_samples_leaf=5,
-            random_state=42,
-            n_jobs=-1
-        )
+        rf_params = optimized_params['random_forest_clf'] if optimized_params else {
+            'n_estimators': 100,
+            'max_depth': 10,
+            'min_samples_split': 10,
+            'min_samples_leaf': 5,
+            'random_state': 42,
+            'n_jobs': -1
+        }
+        self.rf_clf = RandomForestClassifier(**rf_params)
         self.rf_clf.fit(X, y)
 
-    def _train_regressors(self, X: np.ndarray, y: np.ndarray):
+    def _train_regressors(self, X: np.ndarray, y: np.ndarray, optimized_params: Dict = None):
         """Train regression models (return magnitude prediction)."""
         # XGBoost Regressor
-        self.xgb_reg = xgb.XGBRegressor(
-            n_estimators=100,
-            max_depth=5,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective='reg:squarederror',
-            random_state=42,
-            n_jobs=-1
-        )
+        xgb_params = optimized_params['xgboost_reg'] if optimized_params else {
+            'n_estimators': 100,
+            'max_depth': 5,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'objective': 'reg:squarederror',
+            'random_state': 42,
+            'n_jobs': -1
+        }
+        self.xgb_reg = xgb.XGBRegressor(**xgb_params)
         self.xgb_reg.fit(X, y)
 
         # LightGBM Regressor
-        self.lgb_reg = lgb.LGBMRegressor(
-            n_estimators=100,
-            max_depth=5,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective='regression',
-            random_state=42,
-            n_jobs=-1,
-            verbose=-1
-        )
+        lgb_params = optimized_params['lightgbm_reg'] if optimized_params else {
+            'n_estimators': 100,
+            'max_depth': 5,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'objective': 'regression',
+            'random_state': 42,
+            'n_jobs': -1,
+            'verbose': -1
+        }
+        self.lgb_reg = lgb.LGBMRegressor(**lgb_params)
         self.lgb_reg.fit(X, y)
 
         # Random Forest Regressor
-        self.rf_reg = RandomForestRegressor(
-            n_estimators=100,
-            max_depth=10,
-            min_samples_split=10,
-            min_samples_leaf=5,
-            random_state=42,
-            n_jobs=-1
-        )
+        rf_params = optimized_params['random_forest_reg'] if optimized_params else {
+            'n_estimators': 100,
+            'max_depth': 10,
+            'min_samples_split': 10,
+            'min_samples_leaf': 5,
+            'random_state': 42,
+            'n_jobs': -1
+        }
+        self.rf_reg = RandomForestRegressor(**rf_params)
         self.rf_reg.fit(X, y)
 
     def _predict_direction_ensemble(self, X: np.ndarray) -> np.ndarray:
@@ -582,6 +613,54 @@ class StockPredictor:
             return {}
 
         return dict(list(self.feature_importance.items())[:top_n])
+
+    def get_shap_importance(self, X: pd.DataFrame, top_n: int = 20) -> Dict:
+        """
+        Get SHAP feature importance.
+
+        SHAP values provide more accurate feature importance than
+        built-in methods because they account for feature interactions.
+
+        Args:
+            X: Feature data
+            top_n: Number of top features to return
+
+        Returns:
+            Dictionary of {feature: importance}
+        """
+        try:
+            import shap
+
+            # Use TreeExplainer for tree-based models
+            explainer = shap.TreeExplainer(self.xgb_clf)
+
+            # Calculate SHAP values (sample if dataset is large)
+            sample_size = min(1000, len(X))
+            X_sample = X[self.feature_names].sample(sample_size, random_state=42) if len(X) > sample_size else X[self.feature_names]
+
+            shap_values = explainer.shap_values(X_sample)
+
+            # Get mean absolute SHAP value for each feature
+            mean_shap = np.abs(shap_values).mean(axis=0)
+
+            # Create importance dict
+            shap_importance = dict(zip(self.feature_names, mean_shap))
+
+            # Sort by importance
+            shap_importance = dict(
+                sorted(shap_importance.items(), key=lambda x: x[1], reverse=True)[:top_n]
+            )
+
+            logger.info(f"SHAP analysis complete. Top feature: {list(shap_importance.keys())[0]}")
+
+            return shap_importance
+
+        except ImportError:
+            logger.warning("SHAP not installed. Install with: pip install shap")
+            return {}
+        except Exception as e:
+            logger.error(f"Error calculating SHAP values: {e}")
+            return {}
 
     def needs_retraining(self) -> bool:
         """Check if models need retraining based on age."""
