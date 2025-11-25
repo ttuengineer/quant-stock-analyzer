@@ -127,9 +127,9 @@ def compute_live_features(tickers: list) -> pd.DataFrame:
         """Safely get DataFrame for a single ticker."""
         try:
             if len(tickers) == 1:
-                df = raw.copy()
+                df = raw.copy()  # type: ignore
             else:
-                df = raw[tkr].copy()
+                df = raw[tkr].copy()  # type: ignore
             df = df.dropna(how='all')
             return df
         except Exception:
@@ -155,11 +155,11 @@ def compute_live_features(tickers: list) -> pd.DataFrame:
 
             # Compound returns over N days
             return_1d = float(pct.iloc[-1])
-            return_3d = float((1 + pct.iloc[-3:]).prod() - 1) if len(pct) >= 3 else None
-            return_5d = float((1 + pct.iloc[-5:]).prod() - 1) if len(pct) >= 5 else None
-            return_1m = float((1 + pct.iloc[-21:]).prod() - 1) if len(pct) >= 21 else None
-            return_3m = float((1 + pct.iloc[-63:]).prod() - 1) if len(pct) >= 63 else None
-            return_6m = float((1 + pct.iloc[-126:]).prod() - 1) if len(pct) >= 126 else None
+            return_3d = float((1 + pct.iloc[-3:]).prod() - 1) if len(pct) >= 3 else None  # type: ignore
+            return_5d = float((1 + pct.iloc[-5:]).prod() - 1) if len(pct) >= 5 else None  # type: ignore
+            return_1m = float((1 + pct.iloc[-21:]).prod() - 1) if len(pct) >= 21 else None  # type: ignore
+            return_3m = float((1 + pct.iloc[-63:]).prod() - 1) if len(pct) >= 63 else None  # type: ignore
+            return_6m = float((1 + pct.iloc[-126:]).prod() - 1) if len(pct) >= 126 else None  # type: ignore
 
             # === VOLATILITY (annualized) ===
             ret_20 = pct.tail(20)
@@ -184,8 +184,8 @@ def compute_live_features(tickers: list) -> pd.DataFrame:
             current_vol = float(vol_series.iloc[-1]) if len(vol_series) > 0 else None
             avg_vol_20 = float(vol_series.tail(20).mean()) if len(vol_series) >= 1 else None
             vol_std_20 = float(vol_series.tail(20).std()) if len(vol_series) >= 2 else None
-            volume_ratio_20 = (current_vol / avg_vol_20) if avg_vol_20 and avg_vol_20 > 0 else None
-            volume_zscore = ((current_vol - avg_vol_20) / vol_std_20) if (vol_std_20 and vol_std_20 > 0) else None
+            volume_ratio_20 = (current_vol / avg_vol_20) if avg_vol_20 and avg_vol_20 > 0 else None  # type: ignore
+            volume_zscore = ((current_vol - avg_vol_20) / vol_std_20) if (vol_std_20 and vol_std_20 > 0 and current_vol is not None and avg_vol_20 is not None) else None  # type: ignore
 
             all_features.append({
                 'ticker': ticker,

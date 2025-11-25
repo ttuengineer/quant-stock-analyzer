@@ -19,7 +19,7 @@ Academic References:
 
 import pandas as pd
 import numpy as np
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Union
 from pathlib import Path
 import joblib
 from datetime import datetime
@@ -105,7 +105,7 @@ class StockPredictor:
 
     def predict(
         self,
-        features: pd.DataFrame,
+        features: Union[pd.DataFrame, np.ndarray],
         return_components: bool = False
     ) -> Dict:
         """
@@ -123,7 +123,7 @@ class StockPredictor:
             - signal: BUY/SELL/HOLD based on thresholds
             - components: Individual model predictions (if requested)
         """
-        if features is None or features.empty:
+        if features is None or (hasattr(features, 'empty') and features.empty) or (isinstance(features, np.ndarray) and features.size == 0):
             logger.warning("No features provided for prediction")
             return self._default_prediction()
 
@@ -134,7 +134,10 @@ class StockPredictor:
 
         try:
             # Prepare features
-            X = features[self.feature_names]
+            if isinstance(features, np.ndarray):
+                X = features
+            else:
+                X = features[self.feature_names]
             X_scaled = self.scaler.transform(X)
 
             # Get predictions from each model

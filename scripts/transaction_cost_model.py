@@ -13,7 +13,7 @@ This gives more realistic backtest results than flat cost assumptions.
 
 import numpy as np
 import pandas as pd
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 
 class TransactionCostModel:
@@ -43,7 +43,7 @@ class TransactionCostModel:
         self,
         ticker: str,
         price: float,
-        volume: float = None
+        volume: Optional[float] = None
     ) -> float:
         """
         Estimate bid-ask spread cost.

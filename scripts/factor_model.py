@@ -93,7 +93,7 @@ class FactorModel:
         recent_returns = recent_returns.loc[common_idx]
         recent_spy = recent_spy.loc[common_idx]
 
-        spy_var = recent_spy.var()
+        spy_var = recent_spy.var()  # type: ignore
 
         for ticker in returns_df.columns:
             stock_ret = recent_returns[ticker].dropna()
@@ -110,9 +110,9 @@ class FactorModel:
             aligned_spy = recent_spy.loc[common_stock_idx]
 
             # === FACTOR 1: MARKET BETA ===
-            if len(aligned_spy) > 0 and spy_var > 0:
+            if len(aligned_spy) > 0 and spy_var > 0:  # type: ignore
                 cov = np.cov(stock_ret, aligned_spy)[0, 1]
-                beta = cov / spy_var
+                beta = cov / spy_var  # type: ignore
                 beta = np.clip(beta, 0.2, 3.0)  # Reasonable bounds
             else:
                 beta = 1.0
@@ -123,10 +123,10 @@ class FactorModel:
             # === FACTOR 3: MOMENTUM (12-1 month return) ===
             # Skip most recent month (mean reversion effect)
             if len(stock_ret) >= 252:
-                ret_12m = (1 + stock_ret.iloc[-252:-21]).prod() - 1
+                ret_12m = (1 + stock_ret.iloc[-252:-21]).prod() - 1  # type: ignore
                 momentum = ret_12m
             elif len(stock_ret) >= 63:
-                ret_period = (1 + stock_ret.iloc[:-21]).prod() - 1
+                ret_period = (1 + stock_ret.iloc[:-21]).prod() - 1  # type: ignore
                 momentum = ret_period
             else:
                 momentum = 0.0
@@ -134,29 +134,29 @@ class FactorModel:
             # === FACTOR 4: SIZE (volatility-adjusted average return as proxy) ===
             # Higher absolute returns scaled by vol = larger/more liquid stocks
             # This is a proxy since we don't have market cap
-            avg_abs_ret = stock_ret.abs().mean()
-            vol = stock_ret.std()
-            size_proxy = avg_abs_ret / (vol + 1e-8) if vol > 0 else 0.0
+            avg_abs_ret = stock_ret.abs().mean()  # type: ignore
+            vol = stock_ret.std()  # type: ignore
+            size_proxy = avg_abs_ret / (vol + 1e-8) if vol > 0 else 0.0  # type: ignore
 
             # === FACTOR 5: VALUE (short-term reversal as cheap/expensive proxy) ===
             # Stocks that have fallen recently are "cheaper" (value)
             # Use 1-month return as value signal (negative = value)
             if len(stock_ret) >= 21:
-                ret_1m = (1 + stock_ret.iloc[-21:]).prod() - 1
-                value_proxy = -ret_1m  # Negative returns = value
+                ret_1m = (1 + stock_ret.iloc[-21:]).prod() - 1  # type: ignore
+                value_proxy = -ret_1m  # type: ignore  # Negative returns = value
             else:
                 value_proxy = 0.0
 
             # === FACTOR 6: LOW-VOL ===
             # Volatility factor - low vol stocks tend to outperform
-            volatility = vol * np.sqrt(252)  # Annualized
+            volatility = vol * np.sqrt(252)  # type: ignore  # Annualized
             low_vol = -volatility  # Negative vol = low-vol factor exposure
 
             # === FACTOR 7: SHORT-TERM REVERSAL (1-week return) ===
             # Very short-term mean reversion signal
             if len(stock_ret) >= 5:
-                ret_5d = (1 + stock_ret.iloc[-5:]).prod() - 1
-                reversal = -ret_5d  # Negative = oversold = reversal signal
+                ret_5d = (1 + stock_ret.iloc[-5:]).prod() - 1  # type: ignore
+                reversal = -ret_5d  # type: ignore  # Negative = oversold = reversal signal
             else:
                 reversal = 0.0
 
@@ -254,8 +254,8 @@ class FactorModel:
 
         # Normalize factor loadings (z-score)
         def normalize(series):
-            mean, std = series.mean(), series.std()
-            if std > 0:
+            mean, std = series.mean(), series.std()  # type: ignore
+            if std > 0:  # type: ignore
                 return np.clip((series - mean) / std, -2, 2)
             return pd.Series(0, index=series.index)
 
@@ -334,8 +334,8 @@ class FactorModel:
 
         if self.verbose:
             print(f"\nResidual returns computed for {len(residual_returns.columns)} stocks (7-factor)")
-            raw_vol = recent_returns.std().mean() * np.sqrt(252)
-            resid_vol = residual_returns.std().mean() * np.sqrt(252)
+            raw_vol = recent_returns.std().mean() * np.sqrt(252)  # type: ignore
+            resid_vol = residual_returns.std().mean() * np.sqrt(252)  # type: ignore
             print(f"  Raw avg vol: {raw_vol:.1%}")
             print(f"  Residual avg vol: {resid_vol:.1%}")
             print(f"  Risk reduction: {(1 - resid_vol/raw_vol)*100:.0f}%")
@@ -417,7 +417,7 @@ class FactorModel:
 
         # Fill missing exposures with mean
         for factor in neutralize_factors:
-            merged[factor] = merged[factor].fillna(merged[factor].mean())
+            merged[factor] = merged[factor].fillna(merged[factor].mean())  # type: ignore
 
         # Regress predictions on factors
         y = merged['pred_proba'].values
@@ -426,12 +426,12 @@ class FactorModel:
 
         # OLS regression
         try:
-            coeffs = np.linalg.lstsq(X, y, rcond=None)[0]
+            coeffs = np.linalg.lstsq(X, y, rcond=None)[0]  # type: ignore
             y_hat = X @ coeffs
             residual_alpha = y - y_hat
         except:
             # Fallback to simple z-score if regression fails
-            residual_alpha = (y - y.mean()) / (y.std() + 1e-8)
+            residual_alpha = (y - y.mean()) / (y.std() + 1e-8)  # type: ignore
 
         # Create series
         result = pd.Series(residual_alpha, index=merged['ticker'])
@@ -511,20 +511,20 @@ class FactorNeutralOptimizer:
         recent = spy_returns.iloc[-lookback:]
 
         # Annualized volatility
-        vol = recent.std() * np.sqrt(252)
+        vol = recent.std() * np.sqrt(252)  # type: ignore
 
         # Recent drawdown
         cumulative = (1 + recent).cumprod()
         peak = cumulative.expanding().max()
-        drawdown = (cumulative / peak - 1).min()
+        drawdown = (cumulative / peak - 1).min()  # type: ignore
 
         # Recent momentum (3-month return)
-        momentum = (1 + recent).prod() - 1
+        momentum = (1 + recent).prod() - 1  # type: ignore
 
         # Regime classification
-        if vol > 0.30 or drawdown < -0.15:
+        if vol > 0.30 or drawdown < -0.15:  # type: ignore
             regime = 'crisis'
-        elif vol > 0.22 or drawdown < -0.08:
+        elif vol > 0.22 or drawdown < -0.08:  # type: ignore
             regime = 'high_vol'
         else:
             regime = 'normal'
@@ -818,13 +818,13 @@ class FactorNeutralOptimizer:
         scores = top.set_index('ticker')['pred_proba']
 
         # Shift scores to be positive
-        scores_shifted = scores - scores.min() + 0.01
+        scores_shifted = scores - scores.min() + 0.01  # type: ignore
 
         # Apply conviction scaling (power transform)
         scores_conv = scores_shifted ** self.conviction_gamma
 
         # Normalize to weights
-        total = scores_conv.sum()
+        total = scores_conv.sum()  # type: ignore
         if total > 0:
             weights = (scores_conv / total).to_dict()
         else:

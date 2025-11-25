@@ -91,7 +91,8 @@ def backtest_strategy(
 
     # Get ALL price data (need full history for execution prices)
     # Load a bit before start_date to get next-day prices
-    price_start = (pd.to_datetime(start_date) - timedelta(days=10)).strftime("%Y-%m-%d")
+    start_dt: pd.Timestamp = pd.to_datetime(start_date)  # type: ignore
+    price_start = (start_dt - timedelta(days=10)).strftime("%Y-%m-%d")
     prices_df = db.get_prices(start_date=price_start, end_date=end_date)
     prices_df['date'] = pd.to_datetime(prices_df['date'])
 
@@ -253,11 +254,11 @@ def backtest_strategy(
 
         # SPY return for same period (also use open-to-open for fairness)
         if entry_date in spy_prices.index and exit_date in spy_prices.index:
-            spy_entry = spy_prices.loc[entry_date, 'adj_close']
-            spy_exit = spy_prices.loc[exit_date, 'adj_close']
+            spy_entry = float(spy_prices.loc[entry_date, 'adj_close'])  # type: ignore
+            spy_exit = float(spy_prices.loc[exit_date, 'adj_close'])  # type: ignore
             spy_return = (spy_exit - spy_entry) / spy_entry
         else:
-            spy_return = 0
+            spy_return = 0.0
 
         # Excess return
         excess_return = portfolio_return - spy_return

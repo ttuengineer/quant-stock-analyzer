@@ -17,6 +17,7 @@ import numpy as np
 from datetime import datetime
 import pickle
 import json
+from typing import Optional
 
 # Mega-cap overlay for improved portfolio construction
 try:
@@ -503,7 +504,7 @@ def walk_forward_validation(
     transaction_cost: float = 0.001,
     use_risk_off: bool = False,
     vix_threshold: float = 25.0,
-    vol_target: float = None,  # Target annual volatility (e.g., 0.15 for 15%)
+    vol_target: Optional[float] = None,  # Target annual volatility (e.g., 0.15 for 15%)
     use_kelly: bool = False,   # Use Kelly fraction for position sizing
     track_turnover: bool = True,  # Track portfolio turnover
     n_ensemble: int = 3,  # Number of models to ensemble (different seeds)
@@ -531,7 +532,7 @@ def walk_forward_validation(
     # Professional enhancements
     optimize_hyperparameters: bool = False,  # Use Optuna hyperparameter optimization
     optuna_trials: int = 50,  # Number of Optuna trials per model
-    portfolio_optimization: str = None,  # Portfolio optimization method ('max_sharpe', 'risk_parity', etc.)
+    portfolio_optimization: Optional[str] = None,  # Portfolio optimization method ('max_sharpe', 'risk_parity', etc.)
     enhanced_risk_analytics: bool = False,  # Calculate advanced risk metrics (VaR, CVaR, Omega, Sortino)
     transaction_costs: bool = False,  # Model realistic transaction costs
     statistical_validation: bool = False,  # Run statistical significance tests
@@ -785,6 +786,10 @@ def walk_forward_validation(
     all_results = []
     yearly_summary = []
 
+    # Track monthly returns for downstream analytics/validation
+    monthly_portfolio_returns = []
+    monthly_spy_returns = []
+
     # Tracking for advanced analytics
     turnover_records = []  # Track monthly turnover
     previous_holdings = set()  # Previous month's tickers
@@ -805,7 +810,7 @@ def walk_forward_validation(
 
     if use_factor_neutral:
         print("\nInitializing Enterprise-Grade Factor-Neutral optimizer...")
-        factor_neutral_optimizer = FactorNeutralOptimizer(
+        factor_neutral_optimizer = FactorNeutralOptimizer(  # type: ignore
             # === POSITION SIZING ===
             max_weight=0.05,           # Allow up to 5% conviction positions
             min_weight=0.0,            # NO minimum - allow optimizer to express conviction!
@@ -852,7 +857,7 @@ def walk_forward_validation(
 
     if use_optimizer:
         print("\nInitializing CVXPY portfolio optimizer...")
-        portfolio_optimizer = LongOnlyOptimizer(
+        portfolio_optimizer = LongOnlyOptimizer(  # type: ignore
             max_weight=0.02,        # Max 2% per position
             min_weight=0.003,       # Min 0.3% per position
             target_beta=1.0,        # Target beta = 1.0
@@ -905,8 +910,9 @@ def walk_forward_validation(
                     universe = get_universe_at_date(historical_universe, d)
                     # Pre-expand with proper ticker alias mapping
                     expanded = set()
-                    for t in universe:
-                        expanded.update(normalize_ticker(t))
+                    if universe is not None:  # type: ignore
+                        for t in universe:
+                            expanded.update(normalize_ticker(t))
                     date_universes[d] = expanded
 
                 # Vectorized check: for each row, is any ticker variant in that date's universe?
@@ -963,7 +969,7 @@ def walk_forward_validation(
         max_date = train_dates.max()
         months_ago = ((max_date - train_dates).dt.days / 30.0).values
         decay_lambda = 0.02  # ~50% weight after 35 months
-        sample_weights = np.exp(-decay_lambda * months_ago)
+        sample_weights = np.exp(-decay_lambda * months_ago)  # type: ignore
         # Normalize weights to sum to len(samples) for consistent learning rate
         sample_weights = sample_weights * len(sample_weights) / sample_weights.sum()
 
@@ -971,11 +977,11 @@ def walk_forward_validation(
         print(f"  Time-decay: oldest weight={sample_weights.min():.2f}, newest={sample_weights.max():.2f}")
 
         if use_regression:
-            print(f"  Target: REGRESSION (mean={y_train.mean():.3f}, std={y_train.std():.3f})")
+            print(f"  Target: REGRESSION (mean={y_train.mean():.3f}, std={y_train.std():.3f})")  # type: ignore
         elif use_ranker:
-            print(f"  Target: continuous rank (mean={y_train.mean():.3f}, std={y_train.std():.3f})")
+            print(f"  Target: continuous rank (mean={y_train.mean():.3f}, std={y_train.std():.3f})")  # type: ignore
         else:
-            n_pos = int(y_train.sum())
+            n_pos = int(y_train.sum())  # type: ignore
             n_neg = len(y_train) - n_pos
             scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1
             print(f"  Class balance: {n_pos} pos ({n_pos/len(y_train)*100:.1f}%) / {n_neg} neg")
@@ -1008,9 +1014,9 @@ def walk_forward_validation(
             # Train with hyperparameter optimization
             print(f"  Running Optuna optimization ({optuna_trials} trials per model)...")
             predictor.train(
-                features=X_train,
-                direction_labels=y_direction,
-                return_labels=y_returns,
+                features=X_train,  # type: ignore
+                direction_labels=y_direction,  # type: ignore
+                return_labels=y_returns,  # type: ignore
                 optimize_hyperparameters=True,
                 optuna_trials=optuna_trials
             )
@@ -1018,7 +1024,7 @@ def walk_forward_validation(
             # Get SHAP importance if requested
             if shap_analysis:
                 print(f"  Calculating SHAP feature importance...")
-                shap_importance = predictor.get_shap_importance(X_train, top_n=20)
+                shap_importance = predictor.get_shap_importance(X_train, top_n=20)  # type: ignore
                 print(f"  Top 5 features by SHAP:")
                 for i, (feat, importance) in enumerate(list(shap_importance.items())[:5]):
                     if i < len(feature_cols):
@@ -1063,7 +1069,7 @@ def walk_forward_validation(
             X_tr_scaled = scaler.fit_transform(X_tr)
             X_val_scaled = scaler.transform(X_val)
 
-            n_pos = int(y_train.sum())
+            n_pos = int(y_train.sum())  # type: ignore
             n_neg = len(y_train) - n_pos
             scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1
 
@@ -1115,7 +1121,7 @@ def walk_forward_validation(
             # Ridge needs calibration to output probabilities
             ridge_base = RidgeClassifier(alpha=1.0, random_state=73)
             ridge_model = CalibratedClassifierCV(ridge_base, cv=3, method='sigmoid')
-            ridge_model.fit(X_tr_scaled, y_tr)
+            ridge_model.fit(X_tr_scaled, y_tr)  # type: ignore
 
             # Store models with their scalers
             models = [
@@ -1132,7 +1138,7 @@ def walk_forward_validation(
             from sklearn.model_selection import cross_val_predict
             from sklearn.linear_model import LogisticRegression
 
-            n_pos = int(y_train.sum())
+            n_pos = int(y_train.sum())  # type: ignore
             n_neg = len(y_train) - n_pos
             scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1
 
@@ -1152,15 +1158,15 @@ def walk_forward_validation(
 
             # Get out-of-fold predictions for stacking (prevents leakage)
             print(f"  STACKED BLEND: Getting OOF predictions...")
-            xgb_oof = cross_val_predict(xgb_oof_model, X_tr, y_tr, cv=3, method='predict_proba')[:, 1]
-            lgb_oof = cross_val_predict(lgb_oof_model, X_tr, y_tr, cv=3, method='predict_proba')[:, 1]
+            xgb_oof = cross_val_predict(xgb_oof_model, X_tr, y_tr, cv=3, method='predict_proba')[:, 1]  # type: ignore
+            lgb_oof = cross_val_predict(lgb_oof_model, X_tr, y_tr, cv=3, method='predict_proba')[:, 1]  # type: ignore
 
             # Stack OOF predictions as meta-features
             meta_features_train = np.column_stack([xgb_oof, lgb_oof])
 
             # Train meta-learner on stacked features
             meta_learner = LogisticRegression(C=1.0, random_state=73, max_iter=1000)
-            meta_learner.fit(meta_features_train, y_tr, sample_weight=w_tr)
+            meta_learner.fit(meta_features_train, y_tr, sample_weight=w_tr)  # type: ignore
 
             # Create final base models WITH early stopping for test-time predictions
             xgb_base = xgb.XGBClassifier(
@@ -1219,7 +1225,7 @@ def walk_forward_validation(
 
         else:
             # === XGBOOST CLASSIFIER (original binary classification) ===
-            n_pos = int(y_train.sum())
+            n_pos = int(y_train.sum())  # type: ignore
             n_neg = len(y_train) - n_pos
             scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1
 
@@ -1251,11 +1257,14 @@ def walk_forward_validation(
                 models.append(model)
 
             # Save per-fold model for audit trail
-            if save_fold_models:
+            if save_fold_models and models:
+                # Use the last model and seed from the ensemble
+                last_model = models[-1]
+                last_seed = 42 + (n_ensemble - 1) * 17
                 save_fold_model(
-                    model=model,
+                    model=last_model,
                     test_year=test_year,
-                    seed=actual_seed,
+                    seed=last_seed,
                     train_window=(min_start_year, train_end_year),
                     feature_cols=feature_cols
                 )
@@ -1270,35 +1279,36 @@ def walk_forward_validation(
             continue
 
         # Ensemble prediction: average from all models
+        # Note: models list contains different types depending on mode (dynamic typing)
         ensemble_preds = np.zeros(len(X_test))
         if optimize_hyperparameters:
             # Professional mode: use StockPredictor
-            _, predictor, _ = models[0]
-            predictions = predictor.predict(X_test)
-            test_pred_proba = predictions['direction_proba']
+            _, predictor, _ = models[0]  # type: ignore[misc]
+            predictions = predictor.predict(X_test)  # type: ignore[union-attr]
+            test_pred_proba = predictions['direction_proba']  # type: ignore[index]
         elif use_stacked_blend:
             # Stacked blend: get base model predictions, then apply meta-learner
-            _, (xgb_base, lgb_base, meta_learner), _ = models[0]
-            xgb_preds = xgb_base.predict_proba(X_test)[:, 1]
-            lgb_preds = lgb_base.predict_proba(X_test)[:, 1]
+            _, (xgb_base, lgb_base, meta_learner), _ = models[0]  # type: ignore[misc]
+            xgb_preds = xgb_base.predict_proba(X_test)[:, 1]  # type: ignore[index]
+            lgb_preds = lgb_base.predict_proba(X_test)[:, 1]  # type: ignore[index]
             meta_features = np.column_stack([xgb_preds, lgb_preds])
-            ensemble_preds = meta_learner.predict_proba(meta_features)[:, 1]
+            ensemble_preds = meta_learner.predict_proba(meta_features)[:, 1]  # type: ignore[index]
             test_pred_proba = ensemble_preds  # already probabilities
         elif use_meta_ensemble:
             # Meta-ensemble: models are tuples (name, model, scaler)
-            for name, model, model_scaler in models:
+            for name, model_obj, model_scaler in models:  # type: ignore[misc]
                 if model_scaler is not None:
                     # Ridge needs scaled features
                     X_scaled = model_scaler.transform(X_test)
-                    ensemble_preds += model.predict_proba(X_scaled)[:, 1]
+                    ensemble_preds += model_obj.predict_proba(X_scaled)[:, 1]  # type: ignore[union-attr]
                 else:
                     # XGB and LGB use raw features
-                    ensemble_preds += model.predict_proba(X_test)[:, 1]
+                    ensemble_preds += model_obj.predict_proba(X_test)[:, 1]  # type: ignore[union-attr]
             test_pred_proba = ensemble_preds / len(models)
         elif use_regression:
             # Regression: average continuous predictions, then rank cross-sectionally
             for m in models:
-                ensemble_preds += m.predict(X_test)
+                ensemble_preds += m.predict(X_test)  # type: ignore[union-attr]
             ensemble_preds = ensemble_preds / len(models)
             # Convert to cross-sectional ranks (0-1) for portfolio construction
             from scipy.stats import rankdata
@@ -1307,15 +1317,15 @@ def walk_forward_validation(
             for m in models:
                 if use_ranker:
                     # LightGBM regressor outputs continuous predictions
-                    ensemble_preds += m.predict(X_test)
+                    ensemble_preds += m.predict(X_test)  # type: ignore[union-attr]
                 else:
                     # XGBoost classifier outputs probabilities
-                    ensemble_preds += m.predict_proba(X_test)[:, 1]
+                    ensemble_preds += m.predict_proba(X_test)[:, 1]  # type: ignore[union-attr]
             test_pred_proba = ensemble_preds / len(models)
 
         # For ranker, predictions are continuous ranks (0-1)
         # Still compute AUC against binary target for comparison
-        test_auc = roc_auc_score(y_test, test_pred_proba)
+        test_auc = roc_auc_score(y_test, test_pred_proba)  # type: ignore[arg-type]
 
         # Precision@TopN (consistent with actual trading - top_n picks)
         test_clean = test_clean.copy()
@@ -1394,28 +1404,29 @@ def walk_forward_validation(
             X = np.nan_to_num(X, nan=0.0)
 
             # Ensemble prediction for backtest (average across all models)
+            # Note: models list contains different types depending on mode (dynamic typing)
             ensemble_preds = np.zeros(len(X))
             if use_stacked_blend:
                 # Stacked blend: get base model predictions, then apply meta-learner
-                _, (xgb_base, lgb_base, meta_learner), _ = models[0]
-                xgb_preds = xgb_base.predict_proba(X)[:, 1]
-                lgb_preds = lgb_base.predict_proba(X)[:, 1]
+                _, (xgb_base, lgb_base, meta_learner), _ = models[0]  # type: ignore[misc]
+                xgb_preds = xgb_base.predict_proba(X)[:, 1]  # type: ignore[index]
+                lgb_preds = lgb_base.predict_proba(X)[:, 1]  # type: ignore[index]
                 meta_features = np.column_stack([xgb_preds, lgb_preds])
-                ensemble_preds = meta_learner.predict_proba(meta_features)[:, 1]
+                ensemble_preds = meta_learner.predict_proba(meta_features)[:, 1]  # type: ignore[index]
                 date_features['pred_proba'] = ensemble_preds
             elif use_meta_ensemble:
                 # Meta-ensemble: models are tuples (name, model, scaler)
-                for name, model, model_scaler in models:
+                for name, model_obj, model_scaler in models:  # type: ignore[misc]
                     if model_scaler is not None:
                         X_scaled = model_scaler.transform(X)
-                        ensemble_preds += model.predict_proba(X_scaled)[:, 1]
+                        ensemble_preds += model_obj.predict_proba(X_scaled)[:, 1]  # type: ignore[union-attr]
                     else:
-                        ensemble_preds += model.predict_proba(X)[:, 1]
+                        ensemble_preds += model_obj.predict_proba(X)[:, 1]  # type: ignore[union-attr]
                 date_features['pred_proba'] = ensemble_preds / len(models)
             elif use_regression:
                 # Regression: average predictions, then rank cross-sectionally
                 for m in models:
-                    ensemble_preds += m.predict(X)
+                    ensemble_preds += m.predict(X)  # type: ignore[union-attr]
                 ensemble_preds = ensemble_preds / len(models)
                 # Convert to cross-sectional ranks (0-1) for portfolio construction
                 from scipy.stats import rankdata
@@ -1424,10 +1435,10 @@ def walk_forward_validation(
                 for m in models:
                     if use_ranker:
                         # LightGBM regressor outputs continuous predictions
-                        ensemble_preds += m.predict(X)
+                        ensemble_preds += m.predict(X)  # type: ignore[union-attr]
                     else:
                         # XGBoost classifier outputs probabilities
-                        ensemble_preds += m.predict_proba(X)[:, 1]
+                        ensemble_preds += m.predict_proba(X)[:, 1]  # type: ignore[union-attr]
                 date_features['pred_proba'] = ensemble_preds / len(models)
 
             # === PORTFOLIO CONSTRUCTION ===
@@ -1464,6 +1475,8 @@ def walk_forward_validation(
             elif use_factor_neutral:
                 # === FACTOR-NEUTRAL OPTIMIZER (ChatGPT institutional-grade Phase 2) ===
                 # Uses factor de-noising: removes market/sector/momentum before optimization
+                assert returns_df_for_opt is not None and spy_returns_for_opt is not None
+                assert sectors_dict_for_opt is not None
 
                 predictions_df = date_features[['ticker', 'pred_proba']].copy()
 
@@ -1476,7 +1489,7 @@ def walk_forward_validation(
                     fn_weights = {t: 1.0/top_n for t in date_features.nlargest(top_n, 'pred_proba')['ticker']}
                 else:
                     spy_up_to_date = spy_returns_for_opt[spy_returns_for_opt.index < signal_dt]
-                    fn_weights = factor_neutral_optimizer.optimize(
+                    fn_weights = factor_neutral_optimizer.optimize(  # type: ignore[union-attr]
                         predictions_df=predictions_df,
                         returns_df=returns_up_to_date,
                         spy_returns=spy_up_to_date,
@@ -1497,6 +1510,7 @@ def walk_forward_validation(
             elif use_optimizer:
                 # === CVXPY OPTIMIZER (ChatGPT institutional-grade) ===
                 # Use portfolio optimizer with beta/vol/sector constraints
+                assert returns_df_for_opt is not None and spy_returns_for_opt is not None
 
                 # Prepare predictions DataFrame for optimizer
                 predictions_df = date_features[['ticker', 'pred_proba']].copy()
@@ -1515,7 +1529,7 @@ def walk_forward_validation(
                     opt_weights = {t: 1.0/top_n for t in date_features.nlargest(top_n, 'pred_proba')['ticker']}
                 else:
                     spy_up_to_date = spy_returns_for_opt[spy_returns_for_opt.index < signal_dt]
-                    opt_weights = portfolio_optimizer.optimize_from_dataframe(
+                    opt_weights = portfolio_optimizer.optimize_from_dataframe(  # type: ignore[union-attr]
                         predictions_df=predictions_df,
                         returns_df=returns_up_to_date,
                         spy_returns=spy_up_to_date,
@@ -1544,7 +1558,7 @@ def walk_forward_validation(
                     predictions_df['prediction'] = predictions_df['score'] / 100
 
                     # Apply mega-cap overlay
-                    portfolio, diagnostics = apply_mega_cap_overlay(
+                    portfolio, diagnostics = apply_mega_cap_overlay(  # type: ignore[possibly-undefined]
                         predictions_df,
                         top_n=top_n,
                         min_score_threshold=40.0,
@@ -1570,14 +1584,15 @@ def walk_forward_validation(
                     bottom_picks = None
 
             # === TURNOVER TRACKING ===
+            # Note: variables below are guaranteed defined by matching if/elif conditions above
             if continuous_weights:
-                current_holdings = set(constrained_weights.keys())
+                current_holdings = set(constrained_weights.keys())  # type: ignore[possibly-undefined]
             elif use_factor_neutral:
-                current_holdings = set(fn_weights.keys())
+                current_holdings = set(fn_weights.keys())  # type: ignore[possibly-undefined]
             elif use_optimizer:
-                current_holdings = set(opt_weights.keys())
+                current_holdings = set(opt_weights.keys())  # type: ignore[possibly-undefined]
             elif long_short:
-                current_holdings = set(top_picks['ticker']) | set(bottom_picks['ticker'])
+                current_holdings = set(top_picks['ticker']) | set(bottom_picks['ticker'])  # type: ignore[union-attr]
             else:
                 current_holdings = set(top_picks['ticker'])
             if track_turnover and previous_holdings:
@@ -1613,13 +1628,13 @@ def walk_forward_validation(
                     returns_df = pd.DataFrame(returns_data).dropna()
 
                     try:
-                        optimizer = PortfolioOptimizer(risk_free_rate=0.04)
+                        optimizer = PortfolioOptimizer(risk_free_rate=0.04)  # type: ignore[possibly-undefined]
                         if portfolio_optimization == 'max_sharpe':
-                            opt_weights_dict = optimizer.optimize_max_sharpe(returns_df)
+                            opt_weights_dict = optimizer.optimize_max_sharpe(returns_df)  # type: ignore[union-attr]
                         elif portfolio_optimization == 'risk_parity':
-                            opt_weights_dict = optimizer.optimize_risk_parity(returns_df)
+                            opt_weights_dict = optimizer.optimize_risk_parity(returns_df)  # type: ignore[union-attr]
                         elif portfolio_optimization == 'min_variance':
-                            opt_weights_dict = optimizer.optimize_min_variance(returns_df)
+                            opt_weights_dict = optimizer.optimize_min_variance(returns_df)  # type: ignore[attr-defined]
                         else:
                             opt_weights_dict = None
 
@@ -1870,7 +1885,7 @@ def walk_forward_validation(
             if transaction_costs and TRANSACTION_COSTS_AVAILABLE and track_turnover and turnover_records:
                 # Get current month turnover
                 current_turnover = turnover_records[-1]['turnover'] if turnover_records else 0.3
-                cost_model = TransactionCostModel()
+                cost_model = TransactionCostModel()  # type: ignore[possibly-undefined]
                 # Apply costs based on turnover
                 cost_adjusted_return = cost_model.apply_costs_to_returns(
                     pd.Series([portfolio_return]),
@@ -1900,6 +1915,8 @@ def walk_forward_validation(
 
             year_returns.append(portfolio_return)
             spy_returns.append(spy_ret)
+            monthly_portfolio_returns.append(portfolio_return)
+            monthly_spy_returns.append(spy_ret)
 
             all_results.append({
                 'year': test_year,
@@ -1907,7 +1924,7 @@ def walk_forward_validation(
                 'portfolio_return': portfolio_return,
                 'gross_return': gross_return,
                 'spy_return': spy_ret,
-                'excess_return': portfolio_return - spy_ret,
+                'excess_return': float(portfolio_return) - float(spy_ret),  # type: ignore[arg-type]
                 'position_scale': combined_scale,
                 'vol_scale': vol_scale,
                 'kelly_scale': kelly_scale,
@@ -1992,9 +2009,9 @@ def walk_forward_validation(
         print("RISK ANALYTICS (Monthly Returns)")
         print("=" * 70)
 
-        port_returns = results_df['portfolio_return'].values
-        spy_returns_arr = results_df['spy_return'].values
-        excess_returns = results_df['excess_return'].values
+        port_returns = np.asarray(results_df['portfolio_return'].values, dtype=np.float64)
+        spy_returns_arr = np.asarray(results_df['spy_return'].values, dtype=np.float64)
+        excess_returns = np.asarray(results_df['excess_return'].values, dtype=np.float64)
 
         n_months = len(port_returns)
         n_years = n_months / 12
@@ -2006,9 +2023,9 @@ def walk_forward_validation(
         ann_spy_ret = (1 + total_spy_ret) ** (1 / n_years) - 1 if n_years > 0 else 0
 
         # --- Volatility (annualized) ---
-        port_vol = np.std(port_returns) * np.sqrt(12)
-        spy_vol = np.std(spy_returns_arr) * np.sqrt(12)
-        excess_vol = np.std(excess_returns) * np.sqrt(12)  # Tracking error
+        port_vol = float(np.std(port_returns)) * np.sqrt(12)
+        spy_vol = float(np.std(spy_returns_arr)) * np.sqrt(12)
+        excess_vol = float(np.std(excess_returns)) * np.sqrt(12)  # Tracking error
 
         # --- Sharpe Ratio (assuming 5% risk-free rate) ---
         rf_rate = 0.05
@@ -2017,7 +2034,7 @@ def walk_forward_validation(
 
         # --- Sortino Ratio (downside deviation only) ---
         downside_returns = port_returns[port_returns < 0]
-        downside_vol = np.std(downside_returns) * np.sqrt(12) if len(downside_returns) > 0 else port_vol
+        downside_vol = float(np.std(downside_returns)) * np.sqrt(12) if len(downside_returns) > 0 else port_vol
         sortino = (ann_port_ret - rf_rate) / downside_vol if downside_vol > 0 else 0
 
         # --- Information Ratio (excess return / tracking error) ---
@@ -2025,7 +2042,7 @@ def walk_forward_validation(
         info_ratio = ann_excess / excess_vol if excess_vol > 0 else 0
 
         # --- Beta to SPY ---
-        if np.std(spy_returns_arr) > 0:
+        if float(np.std(spy_returns_arr)) > 0:
             covariance = np.cov(port_returns, spy_returns_arr)[0, 1]
             spy_variance = np.var(spy_returns_arr)
             beta = covariance / spy_variance
@@ -2068,7 +2085,7 @@ def walk_forward_validation(
         # --- Enhanced Risk Analytics ---
         if enhanced_risk_analytics and RISK_ANALYTICS_AVAILABLE:
             print(f"\n{'--- ENHANCED RISK METRICS ---':^50}")
-            risk_metrics = RiskAnalytics.calculate_all_metrics(
+            risk_metrics = RiskAnalytics.calculate_all_metrics(  # type: ignore[possibly-undefined]
                 pd.Series(monthly_portfolio_returns),
                 risk_free_rate=0.04,
                 confidence_level=0.95
@@ -2163,8 +2180,8 @@ def walk_forward_validation(
     best_year = summary_df.loc[summary_df['excess_return'].idxmax()]
     worst_year = summary_df.loc[summary_df['excess_return'].idxmin()]
 
-    print(f"\n2. BEST YEAR:  {int(best_year['year'])} with {best_year['excess_return']:+.1%} excess")
-    print(f"   WORST YEAR: {int(worst_year['year'])} with {worst_year['excess_return']:+.1%} excess")
+    print(f"\n2. BEST YEAR:  {int(best_year['year'])} with {float(best_year['excess_return']):+.1%} excess")  # type: ignore[arg-type]
+    print(f"   WORST YEAR: {int(worst_year['year'])} with {float(worst_year['excess_return']):+.1%} excess")  # type: ignore[arg-type]
 
     # Bear market performance (2022)
     bear_years = summary_df[summary_df['spy_return'] < 0]
@@ -2247,9 +2264,9 @@ def walk_forward_validation(
         print("INFORMATION COEFFICIENT (IC) ANALYSIS")
         print("=" * 70)
 
-        ic_values = summary_df['spearman_corr'].values
-        avg_ic = np.mean(ic_values)
-        std_ic = np.std(ic_values)
+        ic_values = np.asarray(summary_df['spearman_corr'].values, dtype=np.float64)
+        avg_ic = float(np.mean(ic_values))
+        std_ic = float(np.std(ic_values))
         ic_ir = avg_ic / std_ic if std_ic > 0 else 0  # IC Information Ratio
 
         print(f"\nIC = Spearman correlation between predictions and actual returns")
@@ -2303,7 +2320,7 @@ def walk_forward_validation(
         portfolio_returns_series = pd.Series(monthly_portfolio_returns)
         spy_returns_series = pd.Series(monthly_spy_returns)
 
-        validation_results = StatisticalValidator.comprehensive_validation(
+        validation_results = StatisticalValidator.comprehensive_validation(  # type: ignore[possibly-undefined]
             portfolio_returns_series,
             spy_returns_series,
             risk_free_rate=0.04
@@ -2620,7 +2637,8 @@ if __name__ == "__main__":
 
         for name, results in configs:
             if results is not None and len(results) > 0:
-                total_ret = (1 + results['portfolio_return']).prod() - 1
+                portfolio_returns = pd.to_numeric(results['portfolio_return'], errors='coerce').to_numpy(dtype=float)
+                total_ret = float(np.prod(1.0 + portfolio_returns)) - 1.0
                 r2022 = results[results['year'] == 2022]
                 ret_2022 = r2022['portfolio_return'].values[0] if len(r2022) > 0 else float('nan')
                 print(f"{name:<15} {total_ret:>+13.1%} {ret_2022:>+11.1%}")

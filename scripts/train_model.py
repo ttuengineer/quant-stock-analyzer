@@ -127,7 +127,7 @@ def main():
 
     # === CLASS BALANCE CHECK ===
     # With top-decile labeling, we expect ~10% positive class
-    n_pos = int(y_train.sum())
+    n_pos = int(y_train.sum())  # type: ignore
     n_neg = len(y_train) - n_pos
     pos_ratio = n_pos / len(y_train)
     scale_pos_weight = n_neg / n_pos  # Balance the classes
@@ -190,25 +190,25 @@ def main():
 
     # Metrics
     print("\n=== AUC-ROC (higher is better, 0.5 = random) ===")
-    train_auc = roc_auc_score(y_train, train_pred_proba)
-    val_auc = roc_auc_score(y_val, val_pred_proba)
-    test_auc = roc_auc_score(y_test, test_pred_proba)
+    train_auc = roc_auc_score(y_train, train_pred_proba)  # type: ignore
+    val_auc = roc_auc_score(y_val, val_pred_proba)  # type: ignore
+    test_auc = roc_auc_score(y_test, test_pred_proba)  # type: ignore
 
     print(f"Train AUC: {train_auc:.4f}")
     print(f"Val AUC:   {val_auc:.4f}")
     print(f"Test AUC:  {test_auc:.4f}")
 
     print("\n=== Accuracy (hit rate) ===")
-    train_acc = accuracy_score(y_train, train_pred)
-    val_acc = accuracy_score(y_val, val_pred)
-    test_acc = accuracy_score(y_test, test_pred)
+    train_acc = accuracy_score(y_train, train_pred)  # type: ignore
+    val_acc = accuracy_score(y_val, val_pred)  # type: ignore
+    test_acc = accuracy_score(y_test, test_pred)  # type: ignore
 
     print(f"Train Accuracy: {train_acc:.4f} ({train_acc*100:.1f}%)")
     print(f"Val Accuracy:   {val_acc:.4f} ({val_acc*100:.1f}%)")
     print(f"Test Accuracy:  {test_acc:.4f} ({test_acc*100:.1f}%)")
 
     print("\n=== Test Set Classification Report ===")
-    print(classification_report(y_test, test_pred, target_names=['Lose', 'Win']))
+    print(classification_report(y_test, test_pred, target_names=['Lose', 'Win']))  # type: ignore
 
     # Top decile performance (PRECISION@10)
     # With top-decile labeling: actual=1 means stock was in top 10% future returns

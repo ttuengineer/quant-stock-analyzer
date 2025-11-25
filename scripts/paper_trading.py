@@ -150,8 +150,9 @@ def filter_by_universe(df, historical_universe, date_col='date', ticker_col='tic
     for d in unique_dates:
         universe = get_universe_at_date(historical_universe, d)
         expanded = set()
-        for t in universe:
-            expanded.update(normalize_ticker(t))
+        if universe is not None:  # type: ignore
+            for t in universe:
+                expanded.update(normalize_ticker(t))
         date_universes[d] = expanded
 
     def check_ticker_in_universe(row):
@@ -503,8 +504,8 @@ class PerformanceTracker:
                   f"{row['spy_return']:>+9.1%} {row['excess_return']:>+9.1%}")
 
         # Aggregates
-        total_portfolio = (1 + report_df['portfolio_return']).prod() - 1
-        total_spy = (1 + report_df['spy_return']).prod() - 1
+        total_portfolio = (1 + report_df['portfolio_return']).prod() - 1  # type: ignore
+        total_spy = (1 + report_df['spy_return']).prod() - 1  # type: ignore
         avg_excess = report_df['excess_return'].mean()
         win_rate = (report_df['excess_return'] > 0).mean()
 
@@ -527,7 +528,7 @@ def generate_picks(
     retrain: bool = False,
     min_train_years: int = 3,
     verbose: bool = True
-) -> str:
+) -> str | None:
     """
     Generate paper trading picks using EXACT walk-forward logic.
 
@@ -555,7 +556,7 @@ def generate_picks(
     historical_universe = None
     sectors_dict = {}
     if fix_survivorship_bias:
-        historical_universe, ticker_aliases, sectors_dict = load_historical_universe()
+        historical_universe, ticker_aliases, sectors_dict = load_historical_universe()  # type: ignore
         if historical_universe:
             print(f"\nSurvivorship fix: Loaded universe data")
         else:

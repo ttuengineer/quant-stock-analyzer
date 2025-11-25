@@ -235,7 +235,7 @@ class Database:
 
     # ==================== READ OPERATIONS ====================
 
-    def get_prices(self, ticker: str = None, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+    def get_prices(self, ticker: Optional[str] = None, start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
         """
         Get price data.
 
@@ -261,7 +261,7 @@ class Database:
 
         return pd.read_sql(query, self.conn, params=params)
 
-    def get_fundamentals(self, ticker: str = None, start_date: str = None) -> pd.DataFrame:
+    def get_fundamentals(self, ticker: Optional[str] = None, start_date: Optional[str] = None) -> pd.DataFrame:
         """Get fundamental data."""
         query = "SELECT * FROM fundamentals WHERE 1=1"
         params = []
@@ -291,7 +291,7 @@ class Database:
 
         return pd.read_sql(query, self.conn, params=params)
 
-    def get_benchmarks(self, ticker: str = "SPY", start_date: str = None, end_date: str = None) -> pd.DataFrame:
+    def get_benchmarks(self, ticker: str = "SPY", start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
         """Get benchmark data (SPY by default)."""
         query = "SELECT * FROM benchmarks WHERE ticker = ?"
         params = [ticker]
@@ -307,7 +307,7 @@ class Database:
 
         return pd.read_sql(query, self.conn, params=params)
 
-    def get_features(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+    def get_features(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
         """Get all engineered features for training."""
         query = "SELECT * FROM features WHERE 1=1"
         params = []

@@ -269,7 +269,7 @@ class PortfolioOptimizer:
         # Kelly optimal weights: inverse covariance times expected returns
         try:
             inv_cov = np.linalg.inv(cov_matrix)
-            kelly_weights = np.dot(inv_cov, predictions.values)
+            kelly_weights = np.dot(inv_cov, predictions.values)  # type: ignore
 
             # Apply constraints
             kelly_weights = np.maximum(kelly_weights, 0)  # No shorting

@@ -49,12 +49,12 @@ def fetch_sp500_changes():
 
     changes_table = tables[1]
     changes = []
-    rows = changes_table.find_all('tr')[1:]
+    rows = changes_table.find_all('tr')[1:]  # type: ignore
 
     print(f"Found {len(rows)} change records")
 
     for row in rows:
-        cols = row.find_all('td')
+        cols = row.find_all('td')  # type: ignore
         if len(cols) >= 4:
             try:
                 date_str = cols[0].get_text(strip=True)
@@ -108,9 +108,9 @@ def fetch_current_sp500():
     tickers = []
     sectors = {}
 
-    rows = table.find_all('tr')[1:]
+    rows = table.find_all('tr')[1:]  # type: ignore
     for row in rows:
-        cols = row.find_all('td')
+        cols = row.find_all('td')  # type: ignore
         if len(cols) >= 4:
             ticker = cols[0].get_text(strip=True)
             sector = cols[3].get_text(strip=True) if len(cols) > 3 else ""
