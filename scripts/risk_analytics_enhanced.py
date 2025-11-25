@@ -283,7 +283,7 @@ class RiskAnalytics:
         beta = 1.0  # Assume market beta for simplicity
 
         for name, market_shock in scenarios.items():
-            # Simple linear model: portfolio shock ≈ beta * market shock
+            # Simple linear model: portfolio shock ~= beta * market shock
             portfolio_shock = beta * market_shock
             results[name] = portfolio_shock
 

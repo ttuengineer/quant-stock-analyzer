@@ -89,7 +89,7 @@ class TransactionCostModel:
 
         When you trade, you move the price. Larger trades have bigger impact.
 
-        Square-root model: impact ∝ sqrt(trade_size / daily_volume) * volatility
+        Square-root model: impact proportional to sqrt(trade_size / daily_volume) * volatility
 
         Args:
             trade_value: Dollar value of trade
