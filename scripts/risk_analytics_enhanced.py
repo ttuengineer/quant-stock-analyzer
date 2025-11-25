@@ -53,7 +53,7 @@ class RiskAnalytics:
             std = returns.std()
             var = -(mean + std * stats.norm.ppf(1 - confidence_level))
 
-        return max(var, 0)
+        return float(max(var, 0))
 
     @staticmethod
     def conditional_var(
@@ -82,7 +82,7 @@ class RiskAnalytics:
         else:
             cvar = var
 
-        return max(cvar, 0)
+        return float(max(cvar, 0))
 
     @staticmethod
     def omega_ratio(
