@@ -1594,8 +1594,48 @@ def walk_forward_validation(
             previous_holdings = current_holdings
 
             # === POSITION SIZING ===
+            # Portfolio optimization if enabled
+            if portfolio_optimization and PORTFOLIO_OPT_AVAILABLE:
+                # Get historical returns for selected stocks
+                lookback_days = 252  # Use 1 year of history
+                returns_data = {}
+                for ticker in top_picks['ticker']:
+                    ticker_data = price_by_ticker.get(ticker)
+                    if ticker_data:
+                        prices_series = pd.Series(ticker_data['prices'], index=ticker_data['dates'])
+                        prices_series.index = pd.to_datetime(prices_series.index)
+                        # Get last year of data before signal date
+                        hist_prices = prices_series[prices_series.index < signal_date].tail(lookback_days)
+                        if len(hist_prices) > 20:  # Need minimum data
+                            returns_data[ticker] = hist_prices.pct_change().dropna()
+
+                if len(returns_data) >= 3:  # Need at least 3 stocks for optimization
+                    returns_df = pd.DataFrame(returns_data).dropna()
+
+                    try:
+                        optimizer = PortfolioOptimizer(risk_free_rate=0.04)
+                        if portfolio_optimization == 'max_sharpe':
+                            opt_weights_dict = optimizer.optimize_max_sharpe(returns_df)
+                        elif portfolio_optimization == 'risk_parity':
+                            opt_weights_dict = optimizer.optimize_risk_parity(returns_df)
+                        elif portfolio_optimization == 'min_variance':
+                            opt_weights_dict = optimizer.optimize_min_variance(returns_df)
+                        else:
+                            opt_weights_dict = None
+
+                        if opt_weights_dict:
+                            weights = np.array([opt_weights_dict.get(row['ticker'], 0)
+                                              for _, row in top_picks.iterrows()])
+                            weights = weights / weights.sum()  # Normalize
+                        else:
+                            weights = np.ones(len(top_picks)) / len(top_picks)
+                    except Exception as e:
+                        print(f"  Portfolio optimization failed: {e}, using equal weights")
+                        weights = np.ones(len(top_picks)) / len(top_picks)
+                else:
+                    weights = np.ones(len(top_picks)) / len(top_picks)
             # Use mega-cap overlay weights if available, otherwise vol-weighted
-            if use_mega_cap_overlay and continuous_weight_dict:
+            elif use_mega_cap_overlay and continuous_weight_dict:
                 # Use weights from mega-cap overlay
                 weights = np.array([continuous_weight_dict.get(row['ticker'], 0)
                                     for _, row in top_picks.iterrows()])
@@ -1826,6 +1866,18 @@ def walk_forward_validation(
             # Final portfolio return (scaled exposure)
             portfolio_return = gross_return * combined_scale
 
+            # Apply enhanced transaction costs if enabled
+            if transaction_costs and TRANSACTION_COSTS_AVAILABLE and track_turnover and turnover_records:
+                # Get current month turnover
+                current_turnover = turnover_records[-1]['turnover'] if turnover_records else 0.3
+                cost_model = TransactionCostModel()
+                # Apply costs based on turnover
+                cost_adjusted_return = cost_model.apply_costs_to_returns(
+                    pd.Series([portfolio_return]),
+                    turnover_rate=current_turnover
+                )
+                portfolio_return = cost_adjusted_return.iloc[0]
+
             # === UPDATE ROLLING TRACKERS ===
             # Track for vol targeting
             realized_vol_window.append(gross_return)
@@ -2012,6 +2064,22 @@ def walk_forward_validation(
         print(f"{'Alpha (annualized)':<25} {alpha:>+11.1%} {'--':>12}")
         print(f"{'Information Ratio':<25} {info_ratio:>11.2f} {'--':>12}")
         print(f"{'Tracking Error':<25} {excess_vol:>11.1%} {'--':>12}")
+
+        # --- Enhanced Risk Analytics ---
+        if enhanced_risk_analytics and RISK_ANALYTICS_AVAILABLE:
+            print(f"\n{'--- ENHANCED RISK METRICS ---':^50}")
+            risk_metrics = RiskAnalytics.calculate_all_metrics(
+                pd.Series(monthly_portfolio_returns),
+                risk_free_rate=0.04,
+                confidence_level=0.95
+            )
+
+            print(f"{'VaR (95%)':<25} {risk_metrics['var_95']:>11.1%}")
+            print(f"{'CVaR (95%)':<25} {risk_metrics['cvar_95']:>11.1%}")
+            print(f"{'Omega Ratio':<25} {risk_metrics['omega_ratio']:>11.2f}")
+            print(f"{'Downside Deviation':<25} {risk_metrics['downside_deviation']:>11.1%}")
+            print(f"{'Skewness':<25} {risk_metrics['skewness']:>11.2f}")
+            print(f"{'Kurtosis':<25} {risk_metrics['kurtosis']:>11.2f}")
 
         # --- Turnover Analytics ---
         if track_turnover and turnover_records:
@@ -2225,6 +2293,47 @@ def walk_forward_validation(
         # Percentage of positive IC years
         pct_positive_ic = (ic_values > 0).mean()
         print(f"\n  Positive IC in {pct_positive_ic:.0%} of years ({(ic_values > 0).sum()}/{len(ic_values)})")
+
+    # === STATISTICAL VALIDATION ===
+    if statistical_validation and STATISTICAL_VALIDATION_AVAILABLE and len(monthly_portfolio_returns) > 0:
+        print("\n" + "=" * 70)
+        print("STATISTICAL VALIDATION")
+        print("=" * 70)
+
+        portfolio_returns_series = pd.Series(monthly_portfolio_returns)
+        spy_returns_series = pd.Series(monthly_spy_returns)
+
+        validation_results = StatisticalValidator.comprehensive_validation(
+            portfolio_returns_series,
+            spy_returns_series,
+            risk_free_rate=0.04
+        )
+
+        # T-test results
+        print(f"\n{'--- T-TEST (Excess Returns) ---':^70}")
+        print(f"  t-statistic: {validation_results['t_test']['t_statistic']:.2f}")
+        print(f"  p-value: {validation_results['t_test']['p_value']:.4f}")
+        print(f"  {validation_results['t_test']['interpretation']}")
+
+        # Sharpe significance
+        print(f"\n{'--- SHARPE RATIO SIGNIFICANCE ---':^70}")
+        print(f"  Strategy Sharpe: {validation_results['sharpe_significance']['sharpe_ratio']:.2f}")
+        print(f"  Benchmark Sharpe: {validation_results['sharpe_significance']['benchmark_sharpe']:.2f}")
+        print(f"  p-value: {validation_results['sharpe_significance']['p_value']:.4f}")
+        print(f"  {validation_results['sharpe_significance']['interpretation']}")
+
+        # Monte Carlo
+        print(f"\n{'--- MONTE CARLO SIMULATION (10,000 paths) ---':^70}")
+        print(f"  Mean terminal value: {validation_results['monte_carlo']['mean_terminal_value']:.2f}x")
+        print(f"  5th percentile: {validation_results['monte_carlo']['percentile_5']:.2f}x")
+        print(f"  95th percentile: {validation_results['monte_carlo']['percentile_95']:.2f}x")
+        print(f"  Prob of positive return: {validation_results['monte_carlo']['prob_positive']:.1%}")
+
+        # Confidence intervals
+        print(f"\n{'--- CONFIDENCE INTERVALS (95%) ---':^70}")
+        print(f"  Mean annual return: {validation_results['confidence_intervals']['mean_annual_return']:.1%}")
+        print(f"  95% CI: [{validation_results['confidence_intervals']['ci_lower']:.1%}, "
+              f"{validation_results['confidence_intervals']['ci_upper']:.1%}]")
 
     # Save results
     results_df = pd.DataFrame(all_results)
