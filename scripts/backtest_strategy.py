@@ -15,6 +15,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import pickle
+from typing import Optional
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -39,7 +40,7 @@ def load_model():
 def backtest_strategy(
     top_n: int = 20,
     start_date: str = "2023-01-01",
-    end_date: str = None,
+    end_date: Optional[str] = None,
     transaction_cost: float = 0.001,  # 10 bps per trade (round-trip ~20 bps)
     verbose: bool = True
 ):
