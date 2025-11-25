@@ -109,25 +109,24 @@ class StockPredictor:
         return_components: bool = False
     ) -> Dict:
         """
-        Predict stock returns using ensemble.
+        Predict stock returns using ensemble. Supports single-row or batch input.
 
         Args:
-            features: Engineered features (single row DataFrame)
+            features: Engineered features (DataFrame or ndarray). Can be multiple rows.
             return_components: If True, return individual model predictions
 
         Returns:
             Dictionary with:
-            - direction_prob: Probability of positive return (0-1)
-            - predicted_return: Expected return percentage
-            - confidence: Model agreement (0-1)
-            - signal: BUY/SELL/HOLD based on thresholds
+            - direction_prob: Probability of positive return (float or 1D array)
+            - predicted_return: Expected return percentage (float or 1D array)
+            - confidence: Model agreement (float or 1D array)
+            - signal: BUY/SELL/HOLD (string or list)
             - components: Individual model predictions (if requested)
         """
         if features is None or (hasattr(features, 'empty') and features.empty) or (isinstance(features, np.ndarray) and features.size == 0):
             logger.warning("No features provided for prediction")
             return self._default_prediction()
 
-        # Check if models are trained
         if not self._models_ready():
             logger.warning("Models not trained yet - returning neutral prediction")
             return self._default_prediction()
@@ -138,16 +137,23 @@ class StockPredictor:
                 X = features
             else:
                 X = features[self.feature_names]
+
+            # Ensure 2D
+            X = np.asarray(X)
+            if X.ndim == 1:
+                X = X.reshape(1, -1)
+
             X_scaled = self.scaler.transform(X)
+            n = X_scaled.shape[0]
 
-            # Get predictions from each model
-            xgb_prob = self.xgb_clf.predict_proba(X_scaled)[0, 1]
-            lgb_prob = self.lgb_clf.predict_proba(X_scaled)[0, 1]
-            rf_prob = self.rf_clf.predict_proba(X_scaled)[0, 1]
+            # Get predictions from each model (vectorized)
+            xgb_prob = self.xgb_clf.predict_proba(X_scaled)[:, 1]
+            lgb_prob = self.lgb_clf.predict_proba(X_scaled)[:, 1]
+            rf_prob = self.rf_clf.predict_proba(X_scaled)[:, 1]
 
-            xgb_return = self.xgb_reg.predict(X_scaled)[0]
-            lgb_return = self.lgb_reg.predict(X_scaled)[0]
-            rf_return = self.rf_reg.predict(X_scaled)[0]
+            xgb_return = self.xgb_reg.predict(X_scaled)
+            lgb_return = self.lgb_reg.predict(X_scaled)
+            rf_return = self.rf_reg.predict(X_scaled)
 
             # Ensemble with weighted voting
             ensemble_prob = (
@@ -162,31 +168,47 @@ class StockPredictor:
                 rf_return * self.ensemble_weights["random_forest"]
             )
 
-            # Calculate confidence (model agreement)
-            prob_std = np.std([xgb_prob, lgb_prob, rf_prob])
-            confidence = 1.0 - min(prob_std * 2, 1.0)  # Lower std = higher confidence
+            # Confidence per row (std across models)
+            prob_stack = np.vstack([xgb_prob, lgb_prob, rf_prob])
+            prob_std = prob_stack.std(axis=0)
+            confidence = np.clip(1.0 - prob_std * 2, 0.0, 1.0)
 
-            # Generate signal
-            signal = self._generate_signal(ensemble_prob, ensemble_return, confidence)
+            # Signals
+            signals = [self._generate_signal(p, r, c) for p, r, c in zip(ensemble_prob, ensemble_return, confidence)]
 
-            result = {
-                "direction_prob": float(ensemble_prob),
-                "predicted_return": float(ensemble_return),
-                "confidence": float(confidence),
-                "signal": signal,
-                "timestamp": datetime.now().isoformat()
-            }
-
-            if return_components:
-                result["components"] = {
-                    "xgboost": {"prob": float(xgb_prob), "return": float(xgb_return)},
-                    "lightgbm": {"prob": float(lgb_prob), "return": float(lgb_return)},
-                    "random_forest": {"prob": float(rf_prob), "return": float(rf_return)}
+            # If single-row, return scalars; else return arrays/lists
+            if n == 1:
+                result = {
+                    "direction_prob": float(ensemble_prob[0]),
+                    "predicted_return": float(ensemble_return[0]),
+                    "confidence": float(confidence[0]),
+                    "signal": signals[0],
+                    "timestamp": datetime.now().isoformat()
                 }
+                if return_components:
+                    result["components"] = {
+                        "xgboost": {"prob": float(xgb_prob[0]), "return": float(xgb_return[0])},
+                        "lightgbm": {"prob": float(lgb_prob[0]), "return": float(lgb_return[0])},
+                        "random_forest": {"prob": float(rf_prob[0]), "return": float(rf_return[0])}
+                    }
+            else:
+                result = {
+                    "direction_prob": ensemble_prob,
+                    "predicted_return": ensemble_return,
+                    "confidence": confidence,
+                    "signal": signals,
+                    "timestamp": datetime.now().isoformat()
+                }
+                if return_components:
+                    result["components"] = {
+                        "xgboost": {"prob": xgb_prob, "return": xgb_return},
+                        "lightgbm": {"prob": lgb_prob, "return": lgb_return},
+                        "random_forest": {"prob": rf_prob, "return": rf_return}
+                    }
 
             logger.debug(
-                f"ML Prediction - Prob: {ensemble_prob:.3f}, Return: {ensemble_return:.3f}%, "
-                f"Confidence: {confidence:.3f}, Signal: {signal}"
+                f"ML Prediction - Prob mean: {ensemble_prob.mean():.3f}, Return mean: {ensemble_return.mean():.3f}, "
+                f"Conf mean: {confidence.mean():.3f}, Samples: {n}"
             )
 
             return result
@@ -638,8 +660,23 @@ class StockPredictor:
             explainer = shap.TreeExplainer(self.xgb_clf)
 
             # Calculate SHAP values (sample if dataset is large)
-            sample_size = min(1000, len(X))
-            X_sample = X[self.feature_names].sample(sample_size, random_state=42) if len(X) > sample_size else X[self.feature_names]
+            # Accept ndarray or DataFrame; wrap ndarray with feature names
+            if isinstance(X, pd.DataFrame):
+                X_frame = X
+            else:
+                X_frame = pd.DataFrame(X, columns=self.feature_names)
+
+            # Align feature names with data shape to avoid index/shape mismatches
+            if not self.feature_names or len(self.feature_names) != X_frame.shape[1]:
+                logger.warning(
+                    "Feature name mismatch for SHAP (expected %s, got %s) - aligning to data columns",
+                    len(self.feature_names) if self.feature_names else "none",
+                    X_frame.shape[1]
+                )
+                self.feature_names = list(X_frame.columns)
+
+            sample_size = min(1000, len(X_frame))
+            X_sample = X_frame[self.feature_names].sample(sample_size, random_state=42) if len(X_frame) > sample_size else X_frame[self.feature_names]
 
             shap_values = explainer.shap_values(X_sample)
 

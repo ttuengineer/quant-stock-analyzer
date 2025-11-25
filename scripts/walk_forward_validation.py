@@ -613,7 +613,8 @@ def walk_forward_validation(
                 print(f"  Stocks removed since {dates_available[0][:4]}: {len(removed_since_start)}")
                 print(f"  Examples: {list(removed_since_start)[:5]}")
         else:
-            print("WARNING: Could not load historical universe, proceeding without survivorship bias fix")
+            print("WARNING: Could not load historical universe, proceeding WITHOUT survivorship bias fix.")
+            print("         Provide data/historical_sp500_universe.json or run with --no-survivorship-fix to acknowledge.")
 
     # Load all data
     print("Loading data...")
@@ -958,7 +959,10 @@ def walk_forward_validation(
         else:
             target_col = 'target_binary'
 
+        # Sort by date to keep validation strictly later than training (prevents leakage)
         train_clean = train_data[['ticker', 'date', target_col] + feature_cols].dropna()
+        train_clean = train_clean.sort_values('date')
+
         X_train = train_clean[feature_cols].values
         y_train = train_clean[target_col].values
 
@@ -986,11 +990,11 @@ def walk_forward_validation(
             scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1
             print(f"  Class balance: {n_pos} pos ({n_pos/len(y_train)*100:.1f}%) / {n_neg} neg")
 
-        # Use last 20% of training as validation for early stopping
-        val_split = int(len(X_train) * 0.8)
+        # Use last 20% of training (latest dates) as validation for early stopping
+        val_split = int(len(train_clean) * 0.8)
         X_tr, X_val = X_train[:val_split], X_train[val_split:]
         y_tr, y_val = y_train[:val_split], y_train[val_split:]
-        # Split sample weights too
+        # Split sample weights too (aligned with sorted dates)
         w_tr, w_val = sample_weights[:val_split], sample_weights[val_split:]
 
         # Train ensemble of models with different random seeds
@@ -1285,7 +1289,17 @@ def walk_forward_validation(
             # Professional mode: use StockPredictor
             _, predictor, _ = models[0]  # type: ignore[misc]
             predictions = predictor.predict(X_test)  # type: ignore[union-attr]
-            test_pred_proba = predictions['direction_proba']  # type: ignore[index]
+            # StockPredictor returns 'direction_prob' (batch-aware)
+            dir_prob = predictions.get('direction_prob', None)  # type: ignore[arg-type]
+            prob_array = np.asarray(dir_prob) if dir_prob is not None else np.zeros(len(X_test))
+            if prob_array.ndim == 0:
+                test_pred_proba = np.full(len(X_test), float(prob_array))
+            else:
+                prob_flat = prob_array.ravel()
+                if prob_flat.size == len(X_test):
+                    test_pred_proba = prob_flat
+                else:
+                    test_pred_proba = np.full(len(X_test), float(prob_flat[0]))
         elif use_stacked_blend:
             # Stacked blend: get base model predictions, then apply meta-learner
             _, (xgb_base, lgb_base, meta_learner), _ = models[0]  # type: ignore[misc]
@@ -1406,7 +1420,21 @@ def walk_forward_validation(
             # Ensemble prediction for backtest (average across all models)
             # Note: models list contains different types depending on mode (dynamic typing)
             ensemble_preds = np.zeros(len(X))
-            if use_stacked_blend:
+            if optimize_hyperparameters:
+                # Professional mode: use StockPredictor (batch-aware)
+                _, predictor, _ = models[0]  # type: ignore[misc]
+                pred_dict = predictor.predict(X)  # type: ignore[union-attr]
+                dir_prob = pred_dict.get('direction_prob', None)  # type: ignore[arg-type]
+                prob_array = np.asarray(dir_prob) if dir_prob is not None else np.zeros(len(X))
+                if prob_array.ndim == 0:
+                    date_features['pred_proba'] = np.full(len(X), float(prob_array))
+                else:
+                    prob_flat = prob_array.ravel()
+                    if prob_flat.size == len(X):
+                        date_features['pred_proba'] = prob_flat
+                    else:
+                        date_features['pred_proba'] = np.full(len(X), float(prob_flat[0]))
+            elif use_stacked_blend:
                 # Stacked blend: get base model predictions, then apply meta-learner
                 _, (xgb_base, lgb_base, meta_learner), _ = models[0]  # type: ignore[misc]
                 xgb_preds = xgb_base.predict_proba(X)[:, 1]  # type: ignore[index]

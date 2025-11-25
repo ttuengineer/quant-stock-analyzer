@@ -106,6 +106,34 @@ cp .env.example .env
 # Edit .env with your API keys (optional - works great without keys using yfinance)
 ```
 
+### End-to-End Pipeline (Data → Features → Models → Backtest)
+
+```bash
+# 1) Update price data (Yahoo Finance via yfinance)
+python scripts/collect_data.py
+
+# 2) Engineer ML features (monthly rebalancing horizon)
+python scripts/engineer_features.py
+
+# 3) Train ensemble models (optional if you just want to backtest with on-the-fly training)
+python scripts/train_models.py
+
+# 4) Run walk-forward backtest (optimal config with mega-cap overlay)
+python scripts/walk_forward_validation.py \
+  --ensemble 3 \
+  --mega-cap-overlay \
+  --min-mega-cap-allocation 0.60 \
+  --mega-cap-force-top-k 5
+```
+
+Advanced (slower) pro run with Optuna/TC/shap (can take time):
+```bash
+python scripts/walk_forward_validation.py \
+  --ensemble 3 \
+  --mega-cap-overlay --min-mega-cap-allocation 0.60 --mega-cap-force-top-k 5 \
+  --transaction-costs --professional-mode
+```
+
 ### Launch Web Dashboard
 
 ```bash
